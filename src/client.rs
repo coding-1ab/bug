@@ -1,13 +1,15 @@
 use bevy::{color::palettes::css::*, prelude::*};
 use bevy_prototype_lyon::prelude::*;
+use rand::Rng;
 use std::collections::VecDeque;
 
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins, ShapePlugin))
         .insert_resource(Worm::new())
+        .insert_resource(Dots::new())
         .add_systems(Startup, setup)
-        .add_systems(Update, (input_dir, move_head, redraw_worm))
+        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision))
         .run();
 }
 
@@ -21,7 +23,68 @@ struct Worm {
     sample_distance: f32,      // 이 거리 이상 이동해야 points에 추가
 }
 
+#[derive(Component)]
+struct DotsShape;
+
+#[derive(Resource)]
+struct Dots {
+    items: Vec<(Vec2, Entity)>,  // Position + Entity 함께!
+}
+
+impl Dots {
+    const EAT_RADIUS: f32 = 20.0;
+    const SPAWN_RADIUSX: f32 = 600.0;
+    const SPAWN_RADIUSY: f32 = 300.0;
+    const DOT_RADIUS: f32 = 12.0;
+
+    fn new() -> Self {
+        Self {
+            items: Vec::new(),
+        }
+    }
+
+    fn random_position() -> Vec2 {
+        let mut rng = rand::rng();
+        let x = rng.random_range(-Self::SPAWN_RADIUSX..Self::SPAWN_RADIUSX);
+        let y = rng.random_range(-Self::SPAWN_RADIUSY..Self::SPAWN_RADIUSY);
+        Vec2::new(x, y)
+    }
+
+    /// Spawn a dot at random position
+    fn spawn(&mut self, commands: &mut Commands) {
+        let pos = Self::random_position();
+
+        let circle = shapes::Circle {
+            radius: Self::DOT_RADIUS,
+            center: Vec2::ZERO,
+        };
+
+        let entity = commands.spawn((
+            ShapeBuilder::with(&circle).fill(RED).build(),
+            Transform::from_translation(pos.extend(0.0)),
+            DotsShape,
+        )).id();
+
+        self.items.push((pos, entity));
+    }
+
+    fn remove_nearby(&mut self, center: Vec2) -> Vec<Entity> {
+        let mut removed = Vec::new();
+        self.items.retain(|(pos, entity)| {
+            if pos.distance(center) <= Self::EAT_RADIUS {
+                removed.push(*entity);
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    }
+}
+
 impl Worm {
+    const GROWTH_PER_DOT: usize = 20;
+
     fn new() -> Self {
         let head = Vec2::new(-200.0, 0.0);
         let mut points = VecDeque::new();
@@ -36,12 +99,16 @@ impl Worm {
             sample_distance: 6.0,
         }
     }
+    
+    fn grow(&mut self, count: usize) {
+        self.max_points += count * Self::GROWTH_PER_DOT;
+    }
 }
 
 #[derive(Component)]
 struct WormShape;
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, mut dots: ResMut<Dots>) {
     commands.spawn(Camera2d);
 
     // 초기 더미 path
@@ -52,6 +119,11 @@ fn setup(mut commands: Commands) {
     commands
         .spawn(ShapeBuilder::with(&path).stroke((GREEN, 10.0)).build())
         .insert(WormShape);
+
+    // dots 생성 (positions 리스트에 추가 + Entity 생성)
+    for _ in 0..20 {
+        dots.spawn(&mut commands);
+    }
 }
 
 /// 방향 전환(키 입력). (WASD / 화살표)
@@ -119,5 +191,29 @@ fn redraw_worm(worm: Res<Worm>, mut query: Query<&mut Shape, With<WormShape>>) {
     // 2) Shape 교체로 렌더 반영
     if let Some(mut shape) = query.iter_mut().next() {
         *shape = ShapeBuilder::with(&path).stroke((GREEN, 10.0)).build();
+    }
+}
+
+fn check_collision(
+    mut commands: Commands,
+    mut worm: ResMut<Worm>,
+    mut dots: ResMut<Dots>,
+) {
+    // 지렁이 머리와 가까운 점들을 제거
+    let removed_entities = dots.remove_nearby(worm.head);
+    let count = removed_entities.len();
+
+    if count > 0 {
+        // 제거된 점들을 삭제
+        for entity in removed_entities {
+            commands.entity(entity).despawn();
+        }
+
+        worm.grow(count);
+
+        // 제거된 점들 만큼 새로운 점들 생성
+        for _ in 0..count {
+            dots.spawn(&mut commands);
+        }
     }
 }
