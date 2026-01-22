@@ -3,6 +3,14 @@ name = "bug"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
 [dependencies]
 bevy = "0.18.0"
 bevy_prototype_lyon = "0.16.0"

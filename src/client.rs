@@ -98,7 +98,7 @@ fn move_head(time: Res<Time>, mut worm: ResMut<Worm>) {
 }
 
 /// points로 지렁이 몸통을 다시 그리고 Shape를 교체
-fn redraw_worm(worm: Res<Worm>, mut q: Query<&mut Shape, With<WormShape>>) {
+fn redraw_worm(worm: Res<Worm>, mut query: Query<&mut Shape, With<WormShape>>) {
     // points가 안 바뀌었으면 스킵
     if !worm.is_changed() {
         return;
@@ -117,7 +117,7 @@ fn redraw_worm(worm: Res<Worm>, mut q: Query<&mut Shape, With<WormShape>>) {
     }
 
     // 2) Shape 교체로 렌더 반영
-    if let Some(mut shape) = q.iter_mut().next() {
+    if let Some(mut shape) = query.iter_mut().next() {
         *shape = ShapeBuilder::with(&path).stroke((GREEN, 10.0)).build();
     }
 }
