@@ -16,11 +16,18 @@ fn main() {
 #[derive(Resource)]
 struct Worm {
     head: Vec2,
-    dir: Vec2,                 // 이동 방향 (정규화)
+     // --- 변경: Vec2 -> Dir2 (항상 "정규화된 방향"만 들고 있게)
+    dir: Dir2,
+
+    // --- 추가: 목표 방향(키를 누르는 동안 이 값이 계속 돌아감)
+    target_dir: Dir2,
     speed: f32,                // px/s
     points: VecDeque<Vec2>,    // 머리 위치 히스토리 = 몸통
     max_points: usize,         // 몸 길이 (샘플 수)
     sample_distance: f32,      // 이 거리 이상 이동해야 points에 추가
+    // --- 추가: 회전 관련 파라미터
+    turn_speed: f32,   // 초당 얼마나 돌지(각속도 느낌)
+    turn_follow: f32,  // target_dir을 얼마나 빨리 따라갈지(부드러움 정도)
 }
 
 #[derive(Component)]
@@ -90,13 +97,21 @@ impl Worm {
         let mut points = VecDeque::new();
         points.push_back(head);
 
+        // --- 초기 방향은 오른쪽
+        let dir = Dir2::EAST;
+
         Self {
             head,
-            dir: Vec2::new(1.0, 0.0),
+            dir,
+            target_dir: dir, // --- 추가: 처음엔 목표도 현재 방향과 동일
             speed: 220.0,
             points,
             max_points: 120,
             sample_distance: 6.0,
+
+            // --- 추가: 값은 취향에 따라 조정 가능
+            turn_speed: 3.0,   // 클수록 더 빨리 회전
+            turn_follow: 10.0, // 클수록 "목표 방향"을 더 빨리 따라감
         }
     }
     
@@ -127,31 +142,40 @@ fn setup(mut commands: Commands, mut dots: ResMut<Dots>) {
 }
 
 /// 방향 전환(키 입력). (WASD / 화살표)
-fn input_dir(keys: Res<ButtonInput<KeyCode>>, mut worm: ResMut<Worm>) {
-    let mut d = Vec2::ZERO;
+fn input_dir(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut worm: ResMut<Worm>) {
+    let dt = time.delta_secs();
 
-    if keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW) {
-        d.y += 1.0;
-    }
-    if keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS) {
-        d.y -= 1.0;
-    }
+    let mut turn = 0.0;
+
     if keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA) {
-        d.x -= 1.0;
+        turn += 1.0;
     }
     if keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD) {
-        d.x += 1.0;
+        turn -= 1.0;
     }
 
-    if d.length_squared() > 0.0 {
-        worm.dir = d.normalize();
+    if turn != 0.0 {
+        // turn_speed * dt 만큼 회전 각도를 만든다
+        let angle = turn * worm.turn_speed * dt;
+
+        let rot = Rot2::radians(angle);
+
+        let rotated_vec = rot * worm.target_dir.as_vec2();
+
+        worm.target_dir = Dir2::new(rotated_vec).unwrap();
     }
+
+    // 2) 실제 방향(dir)은 target_dir을 "부드럽게 따라가게" 한다 (핵심: slerp)
+    //    t가 0이면 거의 안 움직이고, t가 1이면 즉시 목표로 "확" 바뀜
+    let t = (worm.turn_follow * dt).clamp(0.0, 1.0);
+    worm.dir = worm.dir.slerp(worm.target_dir, t);
 }
 
 /// 머리를 시간 기반으로 이동시키고, 일정 거리마다 points에 기록
 fn move_head(time: Res<Time>, mut worm: ResMut<Worm>) {
     let dt = time.delta_secs();
-    let new_head = worm.head + worm.dir * worm.speed * dt;
+    // Dir2는 길이가 1인 "방향"이므로, as_vec2()로 Vec2를 꺼내서 위치 계산에 사용
+    let new_head = worm.head + worm.dir.as_vec2() * worm.speed * dt;
 
     // 샘플링: 너무 촘촘하면 점이 과도하게 늘어서 지렁이가 “굵은 덩어리”처럼 보일 수 있음
     let push = match worm.points.back().copied() {
