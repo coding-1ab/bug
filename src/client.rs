@@ -74,6 +74,8 @@ impl Dots {
     /// Spawn a dot at random position
     fn spawn(&mut self, commands: &mut Commands, map_radius: f32) {
         let pos = Self::random_position(map_radius);
+        self.spawn_at(commands, pos);
+    }
 
     /// 원하는 위치에 점(도트) 하나를 생성한다. (죽으면 내 몸통을 점으로 바꿀 때 필요)
     fn spawn_at(&mut self, commands: &mut Commands, pos: Vec2) -> Entity { // [변경됨] 추가
