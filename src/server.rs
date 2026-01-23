@@ -3,30 +3,6 @@ mod network;
 use std::io::Read;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::thread;
-use std::time::Duration;
-
-/*
-    // 클라이언트 TCP 통신 샘플
-    
-    let server_address = format!("127.0.0.1:8888");
-    let connection = TcpStream::connect(server_address);
-    match connection {
-        Ok(mut stream) => {
-            println!("connected to server..");
-
-            let bytes: [u8; 1024] = [0; 1024];
-            stream.write(&bytes);
-
-            // 바로 꺼봄.
-            stream.shutdown(Shutdown::Both).expect("failed to close..");
-            // sleep(Duration::from_secs(100))
-        }
-        Err(_) => {
-            eprintln!("failed to connect to server..");
-        }
-    }
-
- */
 
 fn main() {
     let listen_port: u16 = 8888;
@@ -116,4 +92,69 @@ fn bytes_to_hex(bytes: &Vec<u8>) -> String {
     bytes.iter()
         .map(|b| format!("{:02x}", b))
         .collect::<String>()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::io::Write;
+    use std::net::{Shutdown, TcpStream};
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    #[test]
+    fn test() -> io::Result<()> {
+        let server_address = format!("127.0.0.1:8888");
+        let connection = TcpStream::connect(server_address);
+        match connection {
+            Ok(mut stream) => {
+                println!("connected to server..");
+
+                //  길이    |   유형  |   메세지
+                // 2 bytes | 1 byte | N bytes ..
+
+                // 1) 핏이 딱 맞는 메세지 테스트
+                let mut bytes: [u8; 7] = [0; 7];
+                bytes[0] = 0;
+                bytes[1] = 5;
+                bytes[2] = 101;
+                bytes[3] = 97;
+                bytes[4] = 98;
+                bytes[5] = 99;
+                bytes[6] = 100;
+                let _ = stream.write(&bytes);
+
+                sleep(Duration::from_secs(1));
+
+                // 2) 패킷이 두개로 파편화되는 경우 테스트
+                // 총 7바이트 중 첫 3바이트..
+                let mut bytes: [u8; 3] = [0; 3];
+                bytes[0] = 0;
+                bytes[1] = 5;
+                bytes[2] = 101;
+                let _ = stream.write(&bytes);
+
+                sleep(Duration::from_secs(1));
+
+                // 총 7바이트 중 이후 4바이트..
+                let mut bytes: [u8; 4] = [0; 4];
+                bytes[0] = 97;
+                bytes[1] = 98;
+                bytes[2] = 99;
+                bytes[3] = 100;
+                let _ = stream.write(&bytes);
+
+                println!("close ..");
+                stream.shutdown(Shutdown::Write)?;
+
+                sleep(Duration::from_secs(1));
+
+                Ok(())
+            }
+            Err(_) => {
+                eprintln!("failed to connect to server..");
+                Err(io::Error::new(io::ErrorKind::ConnectionRefused, "failed to connect to server.."))
+            }
+        }
+    }
 }
