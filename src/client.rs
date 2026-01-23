@@ -6,12 +6,27 @@ use std::collections::VecDeque;
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins, ShapePlugin))
+        .insert_resource(ClearColor(Color::srgb(0.8, 0.3, 0.3)))
+        .insert_resource(Map::new())
         .insert_resource(Worm::new())
         .insert_resource(Dots::new())
         .insert_resource(RemoteWorms::new())
         .add_systems(Startup, setup)
-        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, check_player_death,))
+        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, handle_reset, check_player_death))
         .run();
+}
+
+#[derive(Resource)]
+struct Map {
+    radius: f32,
+}
+
+impl Map {
+    fn new() -> Self {
+        Self {
+            radius: 400.0, 
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -42,8 +57,6 @@ struct Dots {
 
 impl Dots {
     const EAT_RADIUS: f32 = 20.0;
-    const SPAWN_RADIUSX: f32 = 600.0;
-    const SPAWN_RADIUSY: f32 = 300.0;
     const DOT_RADIUS: f32 = 12.0;
 
     fn new() -> Self {
@@ -52,18 +65,16 @@ impl Dots {
         }
     }
 
-    fn random_position() -> Vec2 {
+    fn random_position(map_radius: f32) -> Vec2 {
         let mut rng = rand::rng();
-        let x = rng.random_range(-Self::SPAWN_RADIUSX..Self::SPAWN_RADIUSX);
-        let y = rng.random_range(-Self::SPAWN_RADIUSY..Self::SPAWN_RADIUSY);
-        Vec2::new(x, y)
+        let r = rng.random_range(0.0..1.0f32).powf(0.5) * map_radius;
+        let theta = rng.random_range(0.0..std::f32::consts::TAU);
+        Vec2::new(r * theta.cos(), r * theta.sin())
     }
 
     /// Spawn a dot at random position
-    fn spawn(&mut self, commands: &mut Commands) {
-        let pos = Self::random_position();
-        self.spawn_at(commands, pos);
-    }
+    fn spawn(&mut self, commands: &mut Commands, map_radius: f32) {
+        let pos = Self::random_position(map_radius);
 
     /// 원하는 위치에 점(도트) 하나를 생성한다. (죽으면 내 몸통을 점으로 바꿀 때 필요)
     fn spawn_at(&mut self, commands: &mut Commands, pos: Vec2) -> Entity { // [변경됨] 추가
@@ -72,13 +83,11 @@ impl Dots {
             center: Vec2::ZERO,
         };
 
-        let entity = commands
-            .spawn((
-                ShapeBuilder::with(&circle).fill(RED).build(),
-                Transform::from_translation(pos.extend(0.0)),
-                DotsShape,
-            ))
-            .id();
+        let entity = commands.spawn((
+            ShapeBuilder::with(&circle).fill(PURPLE).build(),
+            Transform::from_translation(pos.extend(0.0)),
+            DotsShape,
+        )).id();
 
         self.items.push((pos, entity));
         entity
@@ -125,17 +134,47 @@ impl Worm {
             turn_follow: 10.0, // 클수록 "목표 방향"을 더 빨리 따라감
         }
     }
+
+    fn reset(&mut self) {
+        let head = Vec2::new(-200.0, 0.0);
+        self.head = head;
+        self.points.clear();
+        self.points.push_back(head);
+        self.dir = Dir2::EAST;
+        self.target_dir = Dir2::EAST;
+        self.max_points = 120;
+    }
     
     fn grow(&mut self, count: usize) {
         self.max_points += count * Self::GROWTH_PER_DOT;
+    }
+
+    fn is_outside(&self, map: &Map) -> bool {
+        self.head.length() > map.radius
+    }
+
+    fn kill(&self, commands: &mut Commands, worm_query: &Query<Entity, With<WormShape>>) {
+        for entity in worm_query.iter() {
+            commands.entity(entity).despawn();
+        }
     }
 }
 
 #[derive(Component)]
 struct WormShape;
 
-fn setup(mut commands: Commands, mut dots: ResMut<Dots>) {
+fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
     commands.spawn(Camera2d);
+
+    // 게임 맵 생성
+    let inner_circle = shapes::Circle {
+        radius: map.radius,
+        center: Vec2::ZERO,
+    };
+    commands.spawn((
+        ShapeBuilder::with(&inner_circle).fill(Color::srgb(0.1, 0.1, 0.15)).build(),
+        Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
+    ));
 
     // 초기 더미 path
     let path = ShapePath::new()
@@ -148,7 +187,7 @@ fn setup(mut commands: Commands, mut dots: ResMut<Dots>) {
 
     // dots 생성 (positions 리스트에 추가 + Entity 생성)
     for _ in 0..20 {
-        dots.spawn(&mut commands);
+        dots.spawn(&mut commands, map.radius);
     }
 }
 
@@ -180,6 +219,33 @@ fn input_dir(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut worm: ResMut<
     //    t가 0이면 거의 안 움직이고, t가 1이면 즉시 목표로 "확" 바뀜
     let t = (worm.turn_follow * dt).clamp(0.0, 1.0);
     worm.dir = worm.dir.slerp(worm.target_dir, t);
+}
+
+/// 임시로 만든 리셋 함수
+fn handle_reset(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    mut worm: ResMut<Worm>,
+    worm_query: Query<Entity, With<WormShape>>,
+) {
+    if keys.just_pressed(KeyCode::KeyR) {
+        // 기존 지렁이 몸통 삭제
+        for entity in worm_query.iter() {
+            commands.entity(entity).despawn();
+        }
+        
+        // 지렁이 데이터 리셋
+        worm.reset();
+        
+        // 새로운 지렁이 몸통 생성
+        let path = ShapePath::new()
+            .move_to(worm.head)
+            .line_to(worm.head + Vec2::new(1.0, 0.0));
+        
+        commands
+            .spawn(ShapeBuilder::with(&path).stroke((GREEN, 10.0)).build())
+            .insert(WormShape);
+    }
 }
 
 /// 머리를 시간 기반으로 이동시키고, 일정 거리마다 points에 기록
@@ -233,7 +299,13 @@ fn check_collision(
     mut commands: Commands,
     mut worm: ResMut<Worm>,
     mut dots: ResMut<Dots>,
+    map: Res<Map>,
+    worm_query: Query<Entity, With<WormShape>>,
 ) {
+    if worm.is_outside(&map) {
+        worm.kill(&mut commands, &worm_query);
+        return;
+    }
     // 지렁이 머리와 가까운 점들을 제거
     let removed_entities = dots.remove_nearby(worm.head);
     let count = removed_entities.len();
@@ -248,7 +320,7 @@ fn check_collision(
 
         // 제거된 점들 만큼 새로운 점들 생성
         for _ in 0..count {
-            dots.spawn(&mut commands);
+            dots.spawn(&mut commands, map.radius);
         }
     }
 }
