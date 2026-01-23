@@ -1,6 +1,6 @@
 use bevy::{color::palettes::css::*, prelude::*};
 use bevy_prototype_lyon::prelude::*;
-use rand::Rng;
+use rand::{Rng};
 use std::collections::VecDeque;
 
 fn main() {
@@ -8,13 +8,15 @@ fn main() {
         .add_plugins((DefaultPlugins, ShapePlugin))
         .insert_resource(Worm::new())
         .insert_resource(Dots::new())
+        .insert_resource(RemoteWorms::new())
         .add_systems(Startup, setup)
-        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision))
+        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, check_player_death,))
         .run();
 }
 
 #[derive(Resource)]
 struct Worm {
+    id: u64,
     head: Vec2,
      // --- 변경: Vec2 -> Dir2 (항상 "정규화된 방향"만 들고 있게)
     dir: Dir2,
@@ -60,19 +62,26 @@ impl Dots {
     /// Spawn a dot at random position
     fn spawn(&mut self, commands: &mut Commands) {
         let pos = Self::random_position();
+        self.spawn_at(commands, pos);
+    }
 
+    /// 원하는 위치에 점(도트) 하나를 생성한다. (죽으면 내 몸통을 점으로 바꿀 때 필요)
+    fn spawn_at(&mut self, commands: &mut Commands, pos: Vec2) -> Entity { // [변경됨] 추가
         let circle = shapes::Circle {
             radius: Self::DOT_RADIUS,
             center: Vec2::ZERO,
         };
 
-        let entity = commands.spawn((
-            ShapeBuilder::with(&circle).fill(RED).build(),
-            Transform::from_translation(pos.extend(0.0)),
-            DotsShape,
-        )).id();
+        let entity = commands
+            .spawn((
+                ShapeBuilder::with(&circle).fill(RED).build(),
+                Transform::from_translation(pos.extend(0.0)),
+                DotsShape,
+            ))
+            .id();
 
         self.items.push((pos, entity));
+        entity
     }
 
     fn remove_nearby(&mut self, center: Vec2) -> Vec<Entity> {
@@ -93,6 +102,7 @@ impl Worm {
     const GROWTH_PER_DOT: usize = 20;
 
     fn new() -> Self {
+        let id = rand::rng().random();
         let head = Vec2::new(-200.0, 0.0);
         let mut points = VecDeque::new();
         points.push_back(head);
@@ -101,6 +111,7 @@ impl Worm {
         let dir = Dir2::EAST;
 
         Self {
+            id,
             head,
             dir,
             target_dir: dir, // --- 추가: 처음엔 목표도 현재 방향과 동일
@@ -240,4 +251,74 @@ fn check_collision(
             dots.spawn(&mut commands);
         }
     }
+}
+
+#[derive(Resource)]
+struct RemoteWorms { 
+    worms: Vec<RemoteWorm>,
+}
+
+impl RemoteWorms { 
+    fn new() -> Self {
+        Self { worms: Vec::new() }
+    }
+}
+
+// 서버에서 받게 될 "다른 지렁이"의 상태(최소 정보만)
+struct RemoteWorm { 
+    id: u64,
+    points: Vec<Vec2>, 
+}
+
+fn check_player_death( 
+    mut commands: Commands,
+    mut worm: ResMut<Worm>,
+    mut dots: ResMut<Dots>,
+    remote: Res<RemoteWorms>,
+) {
+    // 더미 없이 진행: 현재 원격 지렁이가 없으면 아무 일도 안 함.
+    if remote.worms.is_empty() {
+        return;
+    }
+
+    // 내 머리 위치
+    let head = worm.head;
+
+    // 충돌 여부
+    let mut hit_other = false;
+
+    for other in remote.worms.iter() {
+        // 혹시 같은 ID면 무시 (내 데이터가 들어온 경우 대비)
+        if other.id == worm.id {
+            continue;
+        }
+
+        // 다른 지렁이 몸통 점들 중 하나라도 머리랑 가까우면 "충돌"
+        let collided = other
+            .points
+            .iter()
+            .any(|p| p.distance(head) <= Dots::EAT_RADIUS);
+
+        if collided {
+            hit_other = true;
+            break;
+        }
+    }
+
+    if !hit_other {
+        return;
+    }
+
+    // 여기부터: "내 지렁이를 점으로 변환"
+    // 너무 많은 점이 한 번에 생기면 화면이 지저분하니, 몸통 점을 몇 칸씩 건너뛰며 생성
+    const STEP: usize = 5;
+
+    for (i, pos) in worm.points.iter().copied().enumerate() {
+        if i % STEP == 0 {
+            dots.spawn_at(&mut commands, pos);
+        }
+    }
+
+    // 죽었으니 내 지렁이 리셋(새 ID로 다시 시작)
+    *worm = Worm::new();
 }
