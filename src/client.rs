@@ -43,8 +43,7 @@ struct Worm {
     max_points: usize,         // 몸 길이 (샘플 수)
     sample_distance: f32,      // 이 거리 이상 이동해야 points에 추가
     // --- 추가: 회전 관련 파라미터
-    turn_speed: f32,   // 초당 얼마나 돌지(각속도 느낌)
-    turn_follow: f32,  // target_dir을 얼마나 빨리 따라갈지(부드러움 정도)
+    turn_speed: f32,
 }
 
 #[derive(Component)]
@@ -131,7 +130,6 @@ impl Worm {
 
             // --- 추가: 값은 취향에 따라 조정 가능
             turn_speed: 3.0,   // 클수록 더 빨리 회전
-            turn_follow: 10.0, // 클수록 "목표 방향"을 더 빨리 따라감
         }
     }
 
@@ -195,29 +193,31 @@ fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
 fn input_dir(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut worm: ResMut<Worm>) {
     let dt = time.delta_secs();
 
-    let mut turn = 0.0;
+    // 입력된 방향 벡터 계산
+    let mut input_vec = Vec2::ZERO;
 
+    if keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW) {
+        input_vec.y += 1.0;
+    }
+    if keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS) {
+        input_vec.y -= 1.0;
+    }
     if keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA) {
-        turn += 1.0;
+        input_vec.x -= 1.0;
     }
     if keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD) {
-        turn -= 1.0;
+        input_vec.x += 1.0;
     }
 
-    if turn != 0.0 {
-        // turn_speed * dt 만큼 회전 각도를 만든다
-        let angle = turn * worm.turn_speed * dt;
-
-        let rot = Rot2::radians(angle);
-
-        let rotated_vec = rot * worm.target_dir.as_vec2();
-
-        worm.target_dir = Dir2::new(rotated_vec).unwrap();
+    // 키 입력이 있으면 target_dir을 그 방향으로 설정
+    if input_vec != Vec2::ZERO {
+        if let Ok(new_target) = Dir2::new(input_vec) {
+            worm.target_dir = new_target;
+        }
     }
 
-    // 2) 실제 방향(dir)은 target_dir을 "부드럽게 따라가게" 한다 (핵심: slerp)
-    //    t가 0이면 거의 안 움직이고, t가 1이면 즉시 목표로 "확" 바뀜
-    let t = (worm.turn_follow * dt).clamp(0.0, 1.0);
+    // dir이 target_dir을 부드럽게 따라감 (slerp)
+    let t = (worm.turn_speed * dt).clamp(0.0, 1.0);
     worm.dir = worm.dir.slerp(worm.target_dir, t);
 }
 
