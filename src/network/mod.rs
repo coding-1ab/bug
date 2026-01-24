@@ -1,6 +1,7 @@
 
 pub mod error;
 pub mod validator;
+pub mod util;
 
 // 지렁이 몸통을 이루는 것들을 좌표계로..
 // 지렁이 색깔도 각각 달라야 서로 구분이 될듯..
@@ -17,22 +18,29 @@ struct WormBody {
 #[derive(Debug)]
 pub enum MessageFromClient {
     // 1XX
+    // 길이(2bytes)  |   유형(1byte)   |   메세지(N bytes)
+
+    //      3       |       101     |   client id(u16)
     ReqJoin {
         client_id: usize,
     },
+    //      3       |       102     |   client id(u16)
     ReqLeave {
         client_id: usize,
     },
 
     // 2XX
+    //      N+1     |       201     |   client id(u16), 지렁이 몸통 정보(N bytes)
     ReqMove {
         client_id: usize,
         worm_body: WormBody,    // 각 클라이언트는 자기 위치 움직일 때, 자신의 몸통 좌표들을 전송
     },
+    //      3       |       202     |   client id(u16), 먹이(u16)
     ReqEat {
         client_id: usize,
-        food_amount: usize,     // 먹이의 크기
+        food_amount: usize, // 먹이의 크기
     },
+    //      3       |       203     |   client id(u16)
     ReqDie {
         client_id: usize,
     },
@@ -51,10 +59,12 @@ impl MessageFromClient {
 
         match type_num {
             101 => {
-                Ok(MessageFromClient::ReqJoin { client_id: 0 })
+                let client_id = util::bytes_to_u16_be(message_body_bytes).unwrap() as usize;
+                Ok(MessageFromClient::ReqJoin { client_id })
             },
             102 => {
-                Ok(MessageFromClient::ReqLeave { client_id: 0 })
+                let client_id = util::bytes_to_u16_be(message_body_bytes).unwrap() as usize;
+                Ok(MessageFromClient::ReqLeave { client_id })
             },
             201 => {
                 Ok(MessageFromClient::ReqMove { client_id: 0, worm_body: WormBody { client_id: 0, position: vec![] } })
@@ -70,7 +80,7 @@ impl MessageFromClient {
     }
 }
 
-enum MessageFromServer {
+pub enum MessageFromServer {
     // 1XX
     ResJoin {
         client_id: usize,

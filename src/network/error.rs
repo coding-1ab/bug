@@ -7,7 +7,10 @@ pub enum NetworkError {
     ShortMsg {
         expected_length: usize,
         actual_length: usize,
-    }
+    },
+
+    #[error("Message bytes is too short..")]
+    TooShortMsg
 }
 
 // 올바르지 않은 유형의 메세지가 들어왔을 때 발생

@@ -1,7 +1,8 @@
 mod network;
 
+use crate::network::MessageFromClient;
 use std::io::Read;
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::thread;
 
 fn main() {
@@ -12,7 +13,6 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                println!("detected new client. ({})", stream.peer_addr().unwrap());
                 thread::spawn(move|| handle_client(stream));
             }
             Err(e) => {
@@ -25,77 +25,109 @@ fn main() {
 
 fn handle_client(mut stream: TcpStream) {
     let client_access_info = stream.peer_addr().unwrap();
+    println!("[{}] detected new client.", client_access_info);
 
     let mut buffer = Vec::with_capacity(2048);
     let mut read_packet = [0u8; 1024];
+    let mut eof = false;
 
-    'top_loop: while match stream.read(&mut read_packet) {
-        Ok(0) => {
-            println!("client disconnected. ({})", client_access_info);
-            false
-        },
-        Ok(size) => {
-            // 새로 들어온 패킷은 버퍼에 쌓아놓고, 로직은 버퍼를 사용한다.
-            // 이전에 들어온 패킷에서 남는 패킷이 존재하는 경우, 쌓아놓고 다음 분석에 사용되도록 함.
-            buffer.extend_from_slice(&read_packet[..size]);
+    'outer: loop {
+        match stream.read(&mut read_packet) {
+            Ok(0) => {
+                println!("[{}] client disconnected by peer.", client_access_info);
+                eof = true;
+            },
+            Ok(size) => {
+                // 새로 들어온 패킷은 버퍼에 쌓아놓고, 로직은 버퍼를 사용한다.
+                // 이전에 들어온 패킷에서 남는 패킷이 존재하는 경우, 쌓아놓고 다음 분석에 사용되도록 함.
+                buffer.extend_from_slice(&read_packet[..size]);
 
-            // bytes to hex str
-            let hex_str = bytes_to_hex(&buffer);
-            println!("received data = {} (from = {})", hex_str, client_access_info);
+                // bytes to hex str
+                println!("[{}] packet received. (current buffer = {})", client_access_info, bytes_to_hex(&buffer));
+            },
+            Err(_) => {
+                println!("[{}] client disconnected.", client_access_info);
+                break 'outer;
+            }
+        }
 
+        loop {
             match network::validator::validate_packet_length(&buffer) {
                 Ok(remaining_byte_size) => {
                     // actual: 1,2,3,4,5 / expected: 1,2,3 => remaining: 4,5 (2개)
-                    let message_bytes: Vec<u8> = buffer.drain(..buffer.len() - remaining_byte_size)
-                        .skip(2)
-                        .collect();
-                    println!("message bytes = {}", bytes_to_hex(&message_bytes));
+                    let message_bytes = buffer.drain(..buffer.len() - remaining_byte_size)
+                        .skip(2).collect::<Vec<u8>>();
+                    println!("[{}] message bytes = {}", client_access_info, bytes_to_hex(&message_bytes));
 
-                    let result = network::MessageFromClient::new(&message_bytes);
+                    let result = MessageFromClient::new(&message_bytes);
                     if let Err(e) = &result {
                         eprintln!("{:?}", e);
-                        continue 'top_loop;
+                        continue;
                     }
 
-                    // todo ...
                     let msg = result.unwrap();
 
-                    // todo 클라이언트에 응답 전송하는 방법은 이렇게 하면 될듯.
-                    //  stream.write(text.as_bytes()).unwrap();
-
-                    println!("{:?}", buffer);
-
-                    true
+                    // todo ...
+                    process_message(msg, &client_access_info);
                 },
-                Err(short_msg_error @ network::error::NetworkError::ShortMsg{expected_length, actual_length}) => {
-                    // 패킷이 아직 부족한 경우에는 아무것도 하지 않음.
-                    println!("{}", short_msg_error);
-                    true
-                }
-                _ => {
+                // 패킷이 아직 부족한 경우에는 아무것도 하지 않음. 필요한 경우, 얼마나 부족한지 로깅할 수 있음.
+                Err(network::error::NetworkError::TooShortMsg) | Err(network::error::NetworkError::ShortMsg { .. }) => break,
+                err @ _ => {
                     // todo 다른 오류 타입도 추가.
-                    false
+                    println!("[{}] unexpected situation. (error: {:?})", client_access_info, err);
+                    break 'outer;
                 }
             }
-        },
-        Err(_) => {
-            println!("client disconnected. ({})", client_access_info);
-            if let Err(e) = stream.shutdown(Shutdown::Both) {
-                eprintln!("failed to shutdown stream: {}", e);
-            }
-            false
         }
-    } {}
+
+        if eof {
+            break;
+        }
+    }
+
+    // 버퍼가 아직 남아있음에도 통신을 종료하게되는 경우에는 남은 버퍼를 로깅
+    if !buffer.is_empty() {
+        // bytes to hex str
+        eprintln!("[{}] dropping incomplete buffer. (buffer = {})", client_access_info, bytes_to_hex(&buffer));
+    }
+
+    // 명확하게 소켓을 종료 처리 시도
+    if let Err(e) = stream.shutdown(Shutdown::Both) {
+        eprintln!("[{}] failed to shutdown stream. {}", client_access_info, e);
+    }
+}
+
+// fn process_message(msg: MessageFromClient) -> MessageFromServer {
+fn process_message(msg: MessageFromClient, client_access_info: &SocketAddr) {
+    match msg {
+        MessageFromClient::ReqJoin { client_id} => {
+            println!("[{}] client joined to the game. (id = {})", client_access_info, client_id);
+        },
+        MessageFromClient::ReqLeave { client_id } => {
+            println!("[{}] client leaved to the game. (id = {})", client_access_info, client_id);
+        },
+        MessageFromClient::ReqMove { .. } => {
+            // todo ..
+        },
+        MessageFromClient::ReqEat { .. } => {
+            // todo ..
+        },
+        MessageFromClient::ReqDie { .. } => {
+            // todo ..
+        },
+    }
 }
 
 fn bytes_to_hex(bytes: &Vec<u8>) -> String {
-    bytes.iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>()
+    if bytes.len() == 0 {
+        return "".to_string()
+    }
+    format!("0x{}", hex::encode(bytes))
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::network::MessageFromClient;
     use std::io;
     use std::io::Write;
     use std::net::{Shutdown, TcpStream};
@@ -121,6 +153,14 @@ mod tests {
                 }
             }
         }
+
+        fn make_packet(&self, msg: MessageFromClient) -> Vec<u8> {
+            match msg {
+                MessageFromClient::ReqJoin { client_id } => vec![0, 3, 101, (client_id >> 8 & 0xff) as u8, (client_id & 0xff) as u8],
+                MessageFromClient::ReqLeave { client_id } => vec![0, 3, 102, (client_id >> 8 & 0xff) as u8, (client_id & 0xff) as u8],
+                _ => vec![]
+            }
+        }
     }
 
     impl Drop for TestContext {
@@ -138,16 +178,18 @@ mod tests {
     #[test]
     fn test_good_size_packet() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestContext::new("127.0.0.1:8888")?;
+        let client_id = 1234;
 
-        let mut bytes: [u8; 7] = [0; 7];
-        bytes[0] = 0;
-        bytes[1] = 5;
-        bytes[2] = 101;
-        bytes[3] = 97;
-        bytes[4] = 98;
-        bytes[5] = 99;
-        bytes[6] = 100;
-        let _ = fixture.stream.write(&bytes);
+        let bytes = fixture.make_packet(MessageFromClient::ReqJoin { client_id });
+        let _ = fixture.stream.write_all(&bytes)?;
+        println!("join to the game");
+
+        let bytes = fixture.make_packet(MessageFromClient::ReqLeave { client_id });
+        let _ = fixture.stream.write_all(&bytes)?;
+        println!("leave the game");
+
+        println!("sleep 0.1s ..");
+        sleep(Duration::from_millis(100));
 
         Ok(())
     }
@@ -162,10 +204,10 @@ mod tests {
         bytes[0] = 0;
         bytes[1] = 5;
         bytes[2] = 101;
-        let _ = fixture.stream.write(&bytes);
+        let _ = fixture.stream.write_all(&bytes);
 
-        println!("sleep 0.5s ..");
-        sleep(Duration::from_millis(500));
+        println!("sleep 0.1s ..");
+        sleep(Duration::from_millis(100));
 
         // 총 7바이트 중 이후 4바이트..
         let mut bytes: [u8; 4] = [0; 4];
@@ -173,7 +215,10 @@ mod tests {
         bytes[1] = 98;
         bytes[2] = 99;
         bytes[3] = 100;
-        let _ = fixture.stream.write(&bytes);
+        let _ = fixture.stream.write_all(&bytes);
+
+        println!("sleep 0.1s ..");
+        sleep(Duration::from_millis(100));
 
         Ok(())
     }
@@ -187,18 +232,18 @@ mod tests {
         let mut bytes: [u8; 2] = [0; 2];
         bytes[0] = 0;
         bytes[1] = 5;
-        let _ = fixture.stream.write(&bytes);
+        let _ = fixture.stream.write_all(&bytes);
 
-        println!("sleep 0.5s ..");
-        sleep(Duration::from_millis(500));
+        println!("sleep 0.1s ..");
+        sleep(Duration::from_millis(100));
 
         // 총 7바이트 중 1바이트..
         let mut bytes: [u8; 1] = [0; 1];
         bytes[0] = 101;
-        let _ = fixture.stream.write(&bytes);
+        let _ = fixture.stream.write_all(&bytes);
 
-        println!("sleep 0.5s ..");
-        sleep(Duration::from_millis(500));
+        println!("sleep 0.1s ..");
+        sleep(Duration::from_millis(100));
 
         // 총 7바이트 중 이후 4바이트..
         let mut bytes: [u8; 4] = [0; 4];
@@ -206,7 +251,10 @@ mod tests {
         bytes[1] = 98;
         bytes[2] = 99;
         bytes[3] = 100;
-        let _ = fixture.stream.write(&bytes);
+        let _ = fixture.stream.write_all(&bytes);
+
+        println!("sleep 0.1s ..");
+        sleep(Duration::from_millis(100));
 
         Ok(())
     }
