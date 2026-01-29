@@ -16,6 +16,12 @@ fn main() {
         .run();
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum SpeedMode {
+    Nomal,
+    Boost
+}
+
 #[derive(Resource)]
 struct Map {
     radius: f32,
@@ -38,7 +44,16 @@ struct Worm {
 
     // --- 추가: 목표 방향(키를 누르는 동안 이 값이 계속 돌아감)
     target_dir: Dir2,
-    speed: f32,                // px/s
+    
+    mode: SpeedMode, // 현재 속도 모드
+    base_speed: f32,
+    boost_speed: f32,
+
+    boost_min: f32, // 남은 부스트 시간
+    boost_max: f32, // 최대 부스트 시간
+    boost_recharge: f32, // 부스트 회복 속도
+    boost_available: bool, // 완전 충전 전까지 재사용 금지
+
     points: VecDeque<Vec2>,    // 머리 위치 히스토리 = 몸통
     max_points: usize,         // 몸 길이 (샘플 수)
     sample_distance: f32,      // 이 거리 이상 이동해야 points에 추가
@@ -125,7 +140,15 @@ impl Worm {
             head,
             dir,
             target_dir: dir, // --- 추가: 처음엔 목표도 현재 방향과 동일
-            speed: 220.0,
+            mode: SpeedMode::Nomal,
+            base_speed: 220.0,
+            boost_speed: 350.0,
+
+            boost_min:3.0,
+            boost_max:3.0,
+            boost_recharge: 0.4,
+            boost_available: true,
+
             points,
             max_points: 120,
             sample_distance: 6.0,
@@ -143,6 +166,9 @@ impl Worm {
         self.dir = Dir2::EAST;
         self.target_dir = Dir2::EAST;
         self.max_points = 120;
+        self.mode = SpeedMode::Nomal;
+        self.boost_min = self.boost_max;
+        self.boost_available = true;
     }
     
     fn grow(&mut self, count: usize) {
@@ -195,6 +221,9 @@ fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
 fn input_dir(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut worm: ResMut<Worm>) {
     let dt = time.delta_secs();
 
+    // 부스트 키
+    let boost_key = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+
     // 입력된 방향 벡터 계산
     let mut input_vec = Vec2::ZERO;
 
@@ -221,6 +250,25 @@ fn input_dir(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut worm: ResMut<
     // dir이 target_dir을 부드럽게 따라감 (slerp)
     let t = (worm.turn_speed * dt).clamp(0.0, 1.0);
     worm.dir = worm.dir.slerp(worm.target_dir, t);
+
+    if boost_key && worm.boost_available && worm.boost_min > 0.0 {
+        worm.mode = SpeedMode::Boost;
+
+        // 남은 시간 줄이기
+        worm.boost_min = (worm.boost_min - dt).max(0.0);
+        if worm.boost_min <= 0.0 {
+            worm.boost_available = false;
+        }
+    } else {
+        // 부스트 OFF
+        worm.mode = SpeedMode::Nomal;
+
+        // 부스트 회복
+        worm.boost_min = (worm.boost_min + worm.boost_recharge * dt).min(worm.boost_max);
+        if worm.boost_min >= worm.boost_max {
+            worm.boost_available = true;
+        }
+    }
 }
 
 /// 임시로 만든 리셋 함수
@@ -253,8 +301,15 @@ fn handle_reset(
 /// 머리를 시간 기반으로 이동시키고, 일정 거리마다 points에 기록
 fn move_head(time: Res<Time>, mut worm: ResMut<Worm>) {
     let dt = time.delta_secs();
+
+    // 속도는 부스트 모드로 설정
+    let speed = match worm.mode {
+        SpeedMode::Nomal => worm.base_speed,
+        SpeedMode::Boost => worm.boost_speed,
+    };
+
     // Dir2는 길이가 1인 "방향"이므로, as_vec2()로 Vec2를 꺼내서 위치 계산에 사용
-    let new_head = worm.head + worm.dir.as_vec2() * worm.speed * dt;
+    let new_head = worm.head + worm.dir.as_vec2() * speed * dt;
 
     // 샘플링: 너무 촘촘하면 점이 과도하게 늘어서 지렁이가 “굵은 덩어리”처럼 보일 수 있음
     let push = match worm.points.back().copied() {
