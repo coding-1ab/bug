@@ -2,6 +2,7 @@ mod network;
 
 use crate::network::MessageFromClient;
 use crate::network::util;
+use crate::network::error::NetworkError;
 use std::io::Read;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::thread;
@@ -72,10 +73,10 @@ fn handle_client(mut stream: TcpStream) {
                     process_message(msg, &client_access_info);
                 },
                 // 패킷이 아직 부족한 경우에는 아무것도 하지 않음. 필요한 경우, 얼마나 부족한지 로깅할 수 있음.
-                Err(network::error::NetworkError::TooShortMsg) | Err(network::error::NetworkError::ShortMsg { .. }) => break,
+                Err(NetworkError::TooShortMsg) | Err(NetworkError::ShortMsg { .. }) => break,
                 err @ _ => {
                     // todo 다른 오류 타입도 추가.
-                    println!("[{}] unexpected situation. (error: {:?})", client_access_info, err);
+                    eprintln!("[{}] unexpected situation. (error: {:?})", client_access_info, err);
                     break 'outer;
                 }
             }
@@ -107,8 +108,9 @@ fn process_message(msg: MessageFromClient, client_access_info: &SocketAddr) {
         MessageFromClient::ReqLeave { client_id } => {
             println!("[{}] client leaved to the game. (id = {})", client_access_info, client_id);
         },
-        MessageFromClient::ReqMove { .. } => {
-            // todo ..
+        MessageFromClient::ReqMove { client_id, worm_body } => {
+            println!("[{}] client moved in the game. (id = {}, positions = {:?})",
+                     client_access_info, client_id, worm_body);
         },
         MessageFromClient::ReqEat { .. } => {
             // todo ..
@@ -121,7 +123,7 @@ fn process_message(msg: MessageFromClient, client_access_info: &SocketAddr) {
 
 #[cfg(test)]
 mod tests {
-    use crate::network::MessageFromClient;
+    use crate::network::{util, MessageFromClient, WormBody};
     use std::io;
     use std::io::Write;
     use std::net::{Shutdown, TcpStream};
@@ -194,22 +196,13 @@ mod tests {
         let mut fixture = TestContext::new("127.0.0.1:8888")?;
 
         // 총 7바이트 중 첫 3바이트..
-        let mut bytes: [u8; 3] = [0; 3];
-        bytes[0] = 0;
-        bytes[1] = 5;
-        bytes[2] = 101;
-        let _ = fixture.stream.write_all(&bytes);
+        let _ = fixture.stream.write_all(&vec![0, 5, 101]);
 
         println!("sleep 0.1s ..");
         sleep(Duration::from_millis(100));
 
         // 총 7바이트 중 이후 4바이트..
-        let mut bytes: [u8; 4] = [0; 4];
-        bytes[0] = 97;
-        bytes[1] = 98;
-        bytes[2] = 99;
-        bytes[3] = 100;
-        let _ = fixture.stream.write_all(&bytes);
+        let _ = fixture.stream.write_all(&vec![97, 98, 99, 100]);
 
         println!("sleep 0.1s ..");
         sleep(Duration::from_millis(100));
@@ -223,29 +216,41 @@ mod tests {
         let mut fixture = TestContext::new("127.0.0.1:8888")?;
 
         // 총 7바이트 중 첫 2바이트..
-        let mut bytes: [u8; 2] = [0; 2];
-        bytes[0] = 0;
-        bytes[1] = 5;
-        let _ = fixture.stream.write_all(&bytes);
+        let _ = fixture.stream.write_all(&vec![0, 5]);
 
         println!("sleep 0.1s ..");
         sleep(Duration::from_millis(100));
 
         // 총 7바이트 중 1바이트..
-        let mut bytes: [u8; 1] = [0; 1];
-        bytes[0] = 101;
-        let _ = fixture.stream.write_all(&bytes);
+        let _ = fixture.stream.write_all(&vec![101]);
 
         println!("sleep 0.1s ..");
         sleep(Duration::from_millis(100));
 
         // 총 7바이트 중 이후 4바이트..
-        let mut bytes: [u8; 4] = [0; 4];
-        bytes[0] = 97;
-        bytes[1] = 98;
-        bytes[2] = 99;
-        bytes[3] = 100;
-        let _ = fixture.stream.write_all(&bytes);
+        let _ = fixture.stream.write_all(&vec![97, 98, 99, 100]);
+
+        println!("sleep 0.1s ..");
+        sleep(Duration::from_millis(100));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_req_move() -> Result<(), Box<dyn std::error::Error>> {
+        let mut fixture = TestContext::new("127.0.0.1:8888")?;
+        let worm_body = WormBody::new(
+            1234,
+            &util::positions_to_bytes(&vec![(1u64, 1u64), (2u64, 2u64), (3u64, 3u64)])
+        )?;
+        let worm_body_bytes = worm_body.make_bytes();
+
+        let mut packet = vec![];
+        // message type length (1 bytes) + client id (2 bytes) + worm positions (N bytes)
+        packet.extend(util::u16_be_to_bytes(1 + worm_body.make_bytes().len() as u16));
+        packet.push(201u8);
+        packet.extend(worm_body_bytes);
+        let _ = fixture.stream.write_all(&packet);
 
         println!("sleep 0.1s ..");
         sleep(Duration::from_millis(100));

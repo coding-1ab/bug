@@ -6,11 +6,7 @@ use crate::network::util::bytes_to_u16_be;
 //  길이    |   유형  |   메세지
 // 2 bytes | 1 byte | N bytes ..
 pub fn validate_packet_length(bytes: &[u8]) -> Result<usize, NetworkError> {
-    let expected_length = bytes_to_u16_be(bytes);
-    if let None = expected_length {
-        return Err(NetworkError::TooShortMsg);
-    }
-    let expected_length = expected_length.unwrap() as usize;
+    let expected_length = bytes_to_u16_be(bytes)? as usize;
     let actual_length = bytes.len().saturating_sub(2);
 
     // 메세지의 길이 필드에 들어있는 값만큼의 실제 바이트 배열이 들어오지 않았을 경우

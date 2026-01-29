@@ -1,3 +1,4 @@
+use crate::network::error::{NetworkError, ProtocolError};
 
 pub mod error;
 pub mod validator;
@@ -6,10 +7,29 @@ pub mod util;
 // 지렁이 몸통을 이루는 것들을 좌표계로..
 // 지렁이 색깔도 각각 달라야 서로 구분이 될듯..
 #[derive(Debug)]
-struct WormBody {
+pub struct WormBody {
     client_id: usize,
+
     // color: ???
-    position: Vec<(usize, usize)>
+
+    positions: Vec<(u64, u64)>
+}
+
+impl WormBody {
+    pub fn new(client_id: usize, positions: &[u8]) -> Result<Self, NetworkError> {
+        Ok(Self {
+            client_id,
+            positions: util::bytes_to_positions(positions)?
+        })
+    }
+
+    pub fn make_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(2 + self.positions.len() * 16);
+        bytes.push((self.client_id >> 8 & 0xff) as u8);
+        bytes.push((self.client_id & 0xff) as u8);
+        bytes.extend(util::positions_to_bytes(&self.positions));
+        bytes
+    }
 }
 
 // Req*는 Client -> Server 요청,
@@ -30,7 +50,7 @@ pub enum MessageFromClient {
     },
 
     // 2XX
-    //      N+1     |       201     |   client id(u16), 지렁이 몸통 정보(N bytes)
+    //      3 + N   |       201     |   client id(u16), 지렁이 몸통 정보(N bytes)
     ReqMove {
         client_id: usize,
         worm_body: WormBody,    // 각 클라이언트는 자기 위치 움직일 때, 자신의 몸통 좌표들을 전송
@@ -49,33 +69,37 @@ pub enum MessageFromClient {
 impl MessageFromClient {
 
     // 검열된 바이트 배열을 가지고, 클라이언트 요청 구조체를 생성
-    pub fn new(message_bytes: &[u8]) -> Result<Self, error::RuleError> {
+    pub fn new(message_bytes: &[u8]) -> Result<Self, ProtocolError> {
         // 패킷 유형
         let type_num = message_bytes[0] as usize;
 
-        // todo 응답 메세지 구성
         // 해당 패킷 유형의 내용물
         let message_body_bytes = &message_bytes[1..];
 
         match type_num {
             101 => {
-                let client_id = util::bytes_to_u16_be(message_body_bytes).unwrap() as usize;
+                let client_id = util::bytes_to_u16_be(&message_body_bytes[..2])? as usize;
                 Ok(MessageFromClient::ReqJoin { client_id })
             },
             102 => {
-                let client_id = util::bytes_to_u16_be(message_body_bytes).unwrap() as usize;
+                let client_id = util::bytes_to_u16_be(&message_body_bytes[..2])? as usize;
                 Ok(MessageFromClient::ReqLeave { client_id })
             },
             201 => {
-                Ok(MessageFromClient::ReqMove { client_id: 0, worm_body: WormBody { client_id: 0, position: vec![] } })
+                let client_id = util::bytes_to_u16_be(&message_body_bytes[..2])? as usize;
+                let worm_body = WormBody::new(client_id, &message_body_bytes[2..])?;
+                Ok(MessageFromClient::ReqMove { client_id, worm_body })
             },
             202 => {
-                Ok(MessageFromClient::ReqEat { client_id: 0, food_amount: 0 })
+                let client_id = util::bytes_to_u16_be(&message_body_bytes[..2])? as usize;
+                let food_amount = util::bytes_to_u16_be(&message_body_bytes[2..])? as usize;
+                Ok(MessageFromClient::ReqEat { client_id, food_amount })
             },
             203 => {
-                Ok(MessageFromClient::ReqDie { client_id: 0 })
+                let client_id = util::bytes_to_u16_be(&message_body_bytes[..2])? as usize;
+                Ok(MessageFromClient::ReqDie { client_id })
             }
-            n => Err(error::RuleError::InvalidPacketType(n))
+            n => Err(ProtocolError::from(error::RuleError::InvalidPacketType(n)))
         }
     }
 }
