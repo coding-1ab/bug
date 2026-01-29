@@ -1,6 +1,7 @@
 mod network;
 
 use crate::network::MessageFromClient;
+use crate::network::util;
 use std::io::Read;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::thread;
@@ -43,7 +44,7 @@ fn handle_client(mut stream: TcpStream) {
                 buffer.extend_from_slice(&read_packet[..size]);
 
                 // bytes to hex str
-                println!("[{}] packet received. (current buffer = {})", client_access_info, bytes_to_hex(&buffer));
+                println!("[{}] packet received. (current buffer = {})", client_access_info, util::bytes_to_hex(&buffer));
             },
             Err(_) => {
                 println!("[{}] client disconnected.", client_access_info);
@@ -57,7 +58,7 @@ fn handle_client(mut stream: TcpStream) {
                     // actual: 1,2,3,4,5 / expected: 1,2,3 => remaining: 4,5 (2개)
                     let message_bytes = buffer.drain(..buffer.len() - remaining_byte_size)
                         .skip(2).collect::<Vec<u8>>();
-                    println!("[{}] message bytes = {}", client_access_info, bytes_to_hex(&message_bytes));
+                    println!("[{}] message bytes = {}", client_access_info, util::bytes_to_hex(&message_bytes));
 
                     let result = MessageFromClient::new(&message_bytes);
                     if let Err(e) = &result {
@@ -88,7 +89,7 @@ fn handle_client(mut stream: TcpStream) {
     // 버퍼가 아직 남아있음에도 통신을 종료하게되는 경우에는 남은 버퍼를 로깅
     if !buffer.is_empty() {
         // bytes to hex str
-        eprintln!("[{}] dropping incomplete buffer. (buffer = {})", client_access_info, bytes_to_hex(&buffer));
+        eprintln!("[{}] dropping incomplete buffer. (buffer = {})", client_access_info, util::bytes_to_hex(&buffer));
     }
 
     // 명확하게 소켓을 종료 처리 시도
@@ -116,13 +117,6 @@ fn process_message(msg: MessageFromClient, client_access_info: &SocketAddr) {
             // todo ..
         },
     }
-}
-
-fn bytes_to_hex(bytes: &Vec<u8>) -> String {
-    if bytes.len() == 0 {
-        return "".to_string()
-    }
-    format!("0x{}", hex::encode(bytes))
 }
 
 #[cfg(test)]
