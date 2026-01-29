@@ -12,7 +12,7 @@ fn main() {
         .insert_resource(Dots::new())
         .insert_resource(RemoteWorms::new())
         .add_systems(Startup, setup)
-        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, handle_reset, check_player_death))
+        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, check_damage_zone, handle_reset, check_player_death))
         .run();
 }
 
@@ -32,6 +32,27 @@ impl Map {
         Self {
             radius: 400.0, 
         }
+    }
+
+    fn random_circle_inside(&self, min_radius: f32, max_radius: f32) -> (Vec2, f32) {
+        let mut rng = rand::rng();
+
+        let effective_max = max_radius.min(self.radius);
+        let effective_min = min_radius.min(effective_max);
+
+        let circle_radius = rng.random_range(effective_min..=effective_max);
+
+        let max_distance = self.radius - circle_radius;
+
+        let position = if max_distance <= 0.0 {
+            Vec2::ZERO
+        } else {
+            let r = rng.random_range(0.0..1.0f32).sqrt() * max_distance;
+            let theta = rng.random_range(0.0..std::f32::consts::TAU);
+            Vec2::new(r * theta.cos(), r * theta.sin())
+        };
+
+        (position, circle_radius)
     }
 }
 
@@ -59,6 +80,7 @@ struct Worm {
     sample_distance: f32,      // 이 거리 이상 이동해야 points에 추가
     // --- 추가: 회전 관련 파라미터
     turn_speed: f32,
+    damage_accumulator: f32,
 }
 
 #[derive(Component)]
@@ -81,7 +103,15 @@ impl Dots {
 
     fn random_position(map_radius: f32) -> Vec2 {
         let mut rng = rand::rng();
-        let r = rng.random_range(0.0..1.0f32).powf(0.5) * map_radius;
+        
+        let half_radius = map_radius * 0.5;
+        
+        let r = if rng.random_bool(0.5) {
+            rng.random_range(0.0..half_radius)
+        } else {
+            rng.random_range(half_radius..map_radius)
+        };
+        
         let theta = rng.random_range(0.0..std::f32::consts::TAU);
         Vec2::new(r * theta.cos(), r * theta.sin())
     }
@@ -125,15 +155,29 @@ impl Dots {
 
 impl Worm {
     const GROWTH_PER_DOT: usize = 20;
+    const MIN_POINTS: usize = 5;
+    const INITIAL_MAX_POINTS: usize = Self::MIN_POINTS;
+    const SPAWN_RADIUS: f32 = 300.0;
 
     fn new() -> Self {
-        let id = rand::rng().random();
-        let head = Vec2::new(-200.0, 0.0);
-        let mut points = VecDeque::new();
-        points.push_back(head);
+        let mut rng = rand::rng();
+        let id = rng.random();
+        let sample_distance = 6.0;
 
-        // --- 초기 방향은 오른쪽
-        let dir = Dir2::EAST;
+        let angle = rng.random_range(0.0..std::f32::consts::TAU);
+        let dir = Dir2::new(Vec2::new(angle.cos(), angle.sin())).unwrap();
+
+        let body_length = sample_distance * Self::INITIAL_MAX_POINTS as f32;
+        let safe_radius = Self::SPAWN_RADIUS - body_length;
+        let r = rng.random_range(0.0..1.0f32).sqrt() * safe_radius.max(0.0);
+        let pos_angle = rng.random_range(0.0..std::f32::consts::TAU);
+        let head = Vec2::new(r * pos_angle.cos(), r * pos_angle.sin());
+
+        let mut points = VecDeque::new();
+        for i in (0..Self::INITIAL_MAX_POINTS).rev() {
+            let offset = dir.as_vec2() * (-sample_distance * i as f32);
+            points.push_back(head + offset);
+        }
 
         Self {
             id,
@@ -150,22 +194,36 @@ impl Worm {
             boost_available: true,
 
             points,
-            max_points: 120,
-            sample_distance: 6.0,
-
-            // --- 추가: 값은 취향에 따라 조정 가능
-            turn_speed: 3.0,   // 클수록 더 빨리 회전
+            max_points: Self::INITIAL_MAX_POINTS,
+            sample_distance,
+            turn_speed: 3.0,
+            damage_accumulator: 0.0,
         }
     }
 
     fn reset(&mut self) {
-        let head = Vec2::new(-200.0, 0.0);
-        self.head = head;
+        let mut rng = rand::rng();
+
+        let angle = rng.random_range(0.0..std::f32::consts::TAU);
+        let dir = Dir2::new(Vec2::new(angle.cos(), angle.sin())).unwrap();
+
+        let body_length = self.sample_distance * Self::INITIAL_MAX_POINTS as f32;
+        let safe_radius = Self::SPAWN_RADIUS - body_length;
+        let r = rng.random_range(0.0..1.0f32).sqrt() * safe_radius.max(0.0);
+        let pos_angle = rng.random_range(0.0..std::f32::consts::TAU);
+        let head = Vec2::new(r * pos_angle.cos(), r * pos_angle.sin());
+
         self.points.clear();
-        self.points.push_back(head);
-        self.dir = Dir2::EAST;
-        self.target_dir = Dir2::EAST;
-        self.max_points = 120;
+        for i in (0..Self::INITIAL_MAX_POINTS).rev() {
+            let offset = dir.as_vec2() * (-self.sample_distance * i as f32);
+            self.points.push_back(head + offset);
+        }
+
+        self.head = head;
+        self.dir = dir;
+        self.target_dir = dir;
+        self.max_points = Self::INITIAL_MAX_POINTS;
+        self.damage_accumulator = 0.0;
         self.mode = SpeedMode::Nomal;
         self.boost_min = self.boost_max;
         self.boost_available = true;
@@ -173,6 +231,24 @@ impl Worm {
     
     fn grow(&mut self, count: usize) {
         self.max_points += count * Self::GROWTH_PER_DOT;
+    }
+
+    fn take_damage(&mut self, amount: f32) -> bool {
+        self.damage_accumulator += amount;
+        
+        while self.damage_accumulator >= 1.0 {
+            self.damage_accumulator -= 1.0;
+            
+            if self.max_points > Self::MIN_POINTS {
+                self.max_points -= 1;
+                
+                if self.points.len() > self.max_points {
+                    self.points.pop_front();
+                }
+            }
+        }
+
+        self.max_points > Self::MIN_POINTS
     }
 
     fn is_outside(&self, map: &Map) -> bool {
@@ -189,6 +265,12 @@ impl Worm {
 #[derive(Component)]
 struct WormShape;
 
+#[derive(Component)]
+struct DamageZone {
+    radius: f32,
+    damage_per_sec: f32,
+}
+
 fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
     commands.spawn(Camera2d);
 
@@ -200,6 +282,22 @@ fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
     commands.spawn((
         ShapeBuilder::with(&inner_circle).fill(Color::srgb(0.1, 0.1, 0.15)).build(),
         Transform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
+    ));
+
+    let light_blue_transparent = Color::srgba(0.5, 0.8, 1.0, 0.3);
+    
+    let (pos, radius) = map.random_circle_inside(30.0, 100.0);
+    let circle = shapes::Circle {
+        radius,
+        center: Vec2::ZERO,
+    };
+    commands.spawn((
+        ShapeBuilder::with(&circle).fill(light_blue_transparent).build(),
+        Transform::from_translation(pos.extend(-0.5)),
+        DamageZone {
+            radius,
+            damage_per_sec: 30.0,
+        },
     ));
 
     // 초기 더미 path
@@ -349,6 +447,25 @@ fn redraw_worm(worm: Res<Worm>, mut query: Query<&mut Shape, With<WormShape>>) {
     // 2) Shape 교체로 렌더 반영
     if let Some(mut shape) = query.iter_mut().next() {
         *shape = ShapeBuilder::with(&path).stroke((GREEN, 10.0)).build();
+    }
+}
+
+fn check_damage_zone(
+    time: Res<Time>,
+    mut worm: ResMut<Worm>,
+    damage_zones: Query<(&Transform, &DamageZone)>,
+) {
+    let dt = time.delta_secs();
+    let head = worm.head;
+
+    for (transform, zone) in damage_zones.iter() {
+        let zone_center = transform.translation.truncate();
+        let distance = head.distance(zone_center);
+
+        if distance <= zone.radius {
+            let damage = zone.damage_per_sec * dt;
+            worm.take_damage(damage);
+        }
     }
 }
 
