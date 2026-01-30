@@ -233,7 +233,7 @@ mod tests {
         let client_id = 1234;
         let worm_body = WormBody::new(
             client_id,
-            &util::positions_to_bytes(&vec![(1u64, 1u64), (2u64, 2u64), (3u64, 3u64)])
+            &util::positions_to_bytes(&vec![(1_f32, 1_f32), (2_f32, 2_f32), (3_f32, 3_f32)])
         )?;
 
         let packet = MessageFromClient::ReqMove { client_id, worm_body }.make_bytes();

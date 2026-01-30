@@ -13,7 +13,7 @@ pub struct WormBody {
 
     // color: ???
 
-    positions: Vec<(u64, u64)>
+    positions: Vec<(f32, f32)>
 }
 
 impl WormBody {

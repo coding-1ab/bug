@@ -22,16 +22,16 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
 }
 
 // bytes -> positions
-pub fn bytes_to_positions(bytes: &[u8]) -> Result<Vec<(u64, u64)>, NetworkError> {
-    if bytes.len() % 16 != 0 {
+pub fn bytes_to_positions(bytes: &[u8]) -> Result<Vec<(f32, f32)>, NetworkError> {
+    if bytes.len() % 8 != 0 {
         return Err(NetworkError::InvalidMsg { input_length: bytes.len() });
     }
 
-    let mut pairs = Vec::with_capacity(bytes.len() / 16);
+    let mut pairs = Vec::with_capacity(bytes.len() / 8);
 
-    for chunk in bytes.chunks_exact(16) {
-        let a = u64::from_be_bytes(chunk[0..8].try_into().unwrap());
-        let b = u64::from_be_bytes(chunk[8..16].try_into().unwrap());
+    for chunk in bytes.chunks_exact(8) {
+        let a = f32::from_be_bytes(chunk[0..4].try_into().unwrap());
+        let b = f32::from_be_bytes(chunk[4..8].try_into().unwrap());
         pairs.push((a, b));
     }
 
@@ -39,8 +39,8 @@ pub fn bytes_to_positions(bytes: &[u8]) -> Result<Vec<(u64, u64)>, NetworkError>
 }
 
 // positions -> bytes
-pub fn positions_to_bytes(positions: &Vec<(u64, u64)>) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(positions.len() * 16);
+pub fn positions_to_bytes(positions: &Vec<(f32, f32)>) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(positions.len() * 8);
 
     for &(a, b) in positions {
         bytes.extend_from_slice(&a.to_be_bytes());
