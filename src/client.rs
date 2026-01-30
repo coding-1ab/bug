@@ -2,6 +2,7 @@ use bevy::{color::palettes::css::*, prelude::*};
 use bevy_prototype_lyon::prelude::*;
 use rand::{Rng};
 use std::collections::VecDeque;
+use bevy::window::PrimaryWindow;
 
 fn main() {
     App::new()
@@ -12,7 +13,7 @@ fn main() {
         .insert_resource(Dots::new())
         .insert_resource(RemoteWorms::new())
         .add_systems(Startup, setup)
-        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, check_damage_zone, handle_reset, check_player_death))
+        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, check_damage_zone, handle_reset, check_player_death, mouse_aim))
         .run();
 }
 
@@ -260,6 +261,43 @@ impl Worm {
             commands.entity(entity).despawn();
         }
     }
+}
+
+fn mouse_aim(
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera_q: Query<(&Camera, &GlobalTransform)>,
+    mut worm: ResMut<Worm>,
+) {
+    if !mouse.pressed(MouseButton::Left) {
+        return;
+    }
+
+    // single()은 Result를 줌 → Ok일 때만 Window를 꺼내기
+    let Ok(window) = windows.single() else {
+        return;
+    };
+
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
+
+    // camera도 single()은 Result → Ok일 때만 꺼내기
+    let Ok((camera, cam_tf)) = camera_q.single() else {
+        return;
+    };
+
+    let Ok(world_pos) = camera.viewport_to_world_2d(cam_tf, cursor_pos) else {
+        return;
+    };
+
+    let to_mouse = world_pos - worm.head;
+
+    if to_mouse.length_squared() < 0.0001 {
+        return;
+    }
+
+    worm.target_dir = Dir2::new(to_mouse).unwrap();
 }
 
 #[derive(Component)]
