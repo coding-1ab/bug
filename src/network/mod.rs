@@ -1,4 +1,5 @@
 use crate::network::error::{NetworkError, ProtocolError};
+use crate::network::util::u16_be_to_bytes;
 
 pub mod error;
 pub mod validator;
@@ -55,7 +56,7 @@ pub enum MessageFromClient {
         client_id: usize,
         worm_body: WormBody,    // 각 클라이언트는 자기 위치 움직일 때, 자신의 몸통 좌표들을 전송
     },
-    //      3       |       202     |   client id(u16), 먹이(u16)
+    //      5       |       202     |   client id(u16), 먹이(u16)
     ReqEat {
         client_id: usize,
         food_amount: usize, // 먹이의 크기
@@ -98,8 +99,52 @@ impl MessageFromClient {
             203 => {
                 let client_id = util::bytes_to_u16_be(&message_body_bytes[..2])? as usize;
                 Ok(MessageFromClient::ReqDie { client_id })
-            }
-            n => Err(ProtocolError::from(error::RuleError::InvalidPacketType(n)))
+            },
+            n => Err(ProtocolError::from(error::RuleError::InvalidPacketType(n))),
+        }
+    }
+
+    pub fn make_bytes(&self) -> Vec<u8> {
+        match *self {
+            MessageFromClient::ReqJoin { client_id } => {
+                let mut packet = Vec::with_capacity(5);
+                packet.extend(u16_be_to_bytes(3));
+                packet.push(101u8);
+                packet.extend(u16_be_to_bytes(client_id as u16));
+                packet
+            },
+            MessageFromClient::ReqLeave { client_id } => {
+                let mut packet = Vec::with_capacity(5);
+                packet.extend(u16_be_to_bytes(3));
+                packet.push(102u8);
+                packet.extend(u16_be_to_bytes(client_id as u16));
+                packet
+            },
+            MessageFromClient::ReqMove { client_id, ref worm_body } => {
+                let worm_body_bytes = worm_body.make_bytes();
+
+                // message type length (1 bytes) + client id (2 bytes) + worm positions (N bytes)
+                let mut packet = Vec::with_capacity(5 + worm_body_bytes.len());
+                packet.extend(u16_be_to_bytes(1 + worm_body_bytes.len() as u16));
+                packet.push(201u8);
+                packet.extend(worm_body_bytes);
+                packet
+            },
+            MessageFromClient::ReqEat { client_id, food_amount } => {
+                let mut packet = Vec::with_capacity(7);
+                packet.extend(u16_be_to_bytes(5));
+                packet.push(202u8);
+                packet.extend(u16_be_to_bytes(client_id as u16));
+                packet.extend(u16_be_to_bytes(food_amount as u16));
+                packet
+            },
+            MessageFromClient::ReqDie { client_id } => {
+                let mut packet = Vec::with_capacity(5);
+                packet.extend(u16_be_to_bytes(3));
+                packet.push(203u8);
+                packet.extend(u16_be_to_bytes(client_id as u16));
+                packet
+            },
         }
     }
 }

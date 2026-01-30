@@ -149,14 +149,6 @@ mod tests {
                 }
             }
         }
-
-        fn make_packet(&self, msg: MessageFromClient) -> Vec<u8> {
-            match msg {
-                MessageFromClient::ReqJoin { client_id } => vec![0, 3, 101, (client_id >> 8 & 0xff) as u8, (client_id & 0xff) as u8],
-                MessageFromClient::ReqLeave { client_id } => vec![0, 3, 102, (client_id >> 8 & 0xff) as u8, (client_id & 0xff) as u8],
-                _ => vec![]
-            }
-        }
     }
 
     impl Drop for TestContext {
@@ -176,12 +168,12 @@ mod tests {
         let mut fixture = TestContext::new("127.0.0.1:8888")?;
         let client_id = 1234;
 
-        let bytes = fixture.make_packet(MessageFromClient::ReqJoin { client_id });
-        let _ = fixture.stream.write_all(&bytes)?;
+        let packet = MessageFromClient::ReqJoin { client_id }.make_bytes();
+        let _ = fixture.stream.write_all(&packet)?;
         println!("join to the game");
 
-        let bytes = fixture.make_packet(MessageFromClient::ReqLeave { client_id });
-        let _ = fixture.stream.write_all(&bytes)?;
+        let packet = MessageFromClient::ReqLeave { client_id }.make_bytes();
+        let _ = fixture.stream.write_all(&packet)?;
         println!("leave the game");
 
         println!("sleep 0.1s ..");
@@ -194,15 +186,15 @@ mod tests {
     #[test]
     fn test_divided_2_packets() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestContext::new("127.0.0.1:8888")?;
+        let client_id = 1234;
 
-        // 총 7바이트 중 첫 3바이트..
-        let _ = fixture.stream.write_all(&vec![0, 5, 101]);
+        let packet = MessageFromClient::ReqJoin { client_id }.make_bytes();
+        let _ = fixture.stream.write_all(&packet[..2]);
 
         println!("sleep 0.1s ..");
         sleep(Duration::from_millis(100));
 
-        // 총 7바이트 중 이후 4바이트..
-        let _ = fixture.stream.write_all(&vec![97, 98, 99, 100]);
+        let _ = fixture.stream.write_all(&packet[2..]);
 
         println!("sleep 0.1s ..");
         sleep(Duration::from_millis(100));
@@ -214,21 +206,20 @@ mod tests {
     #[test]
     fn test_divided_3_packets() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestContext::new("127.0.0.1:8888")?;
+        let client_id = 1234;
 
-        // 총 7바이트 중 첫 2바이트..
-        let _ = fixture.stream.write_all(&vec![0, 5]);
-
-        println!("sleep 0.1s ..");
-        sleep(Duration::from_millis(100));
-
-        // 총 7바이트 중 1바이트..
-        let _ = fixture.stream.write_all(&vec![101]);
+        let packet = MessageFromClient::ReqJoin { client_id }.make_bytes();
+        let _ = fixture.stream.write_all(&packet[..2]);
 
         println!("sleep 0.1s ..");
         sleep(Duration::from_millis(100));
 
-        // 총 7바이트 중 이후 4바이트..
-        let _ = fixture.stream.write_all(&vec![97, 98, 99, 100]);
+        let _ = fixture.stream.write_all(&[packet[2]]);
+
+        println!("sleep 0.1s ..");
+        sleep(Duration::from_millis(100));
+
+        let _ = fixture.stream.write_all(&packet[3..]);
 
         println!("sleep 0.1s ..");
         sleep(Duration::from_millis(100));
@@ -239,17 +230,13 @@ mod tests {
     #[test]
     fn test_req_move() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestContext::new("127.0.0.1:8888")?;
+        let client_id = 1234;
         let worm_body = WormBody::new(
-            1234,
+            client_id,
             &util::positions_to_bytes(&vec![(1u64, 1u64), (2u64, 2u64), (3u64, 3u64)])
         )?;
-        let worm_body_bytes = worm_body.make_bytes();
 
-        let mut packet = vec![];
-        // message type length (1 bytes) + client id (2 bytes) + worm positions (N bytes)
-        packet.extend(util::u16_be_to_bytes(1 + worm_body.make_bytes().len() as u16));
-        packet.push(201u8);
-        packet.extend(worm_body_bytes);
+        let packet = MessageFromClient::ReqMove { client_id, worm_body }.make_bytes();
         let _ = fixture.stream.write_all(&packet);
 
         println!("sleep 0.1s ..");
