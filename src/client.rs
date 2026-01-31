@@ -5,16 +5,43 @@ use std::collections::VecDeque;
 use bevy::window::PrimaryWindow;
 
 fn main() {
+    let map = Map::new();
+    let worm = Worm::new(map.radius);
+
     App::new()
         .add_plugins((DefaultPlugins, ShapePlugin))
         .insert_resource(ClearColor(Color::srgb(0.8, 0.3, 0.3)))
-        .insert_resource(Map::new())
-        .insert_resource(Worm::new())
+        .insert_resource(map)
+        .insert_resource(worm)
         .insert_resource(Dots::new())
         .insert_resource(RemoteWorms::new())
         .add_systems(Startup, setup)
-        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, check_damage_zone, handle_reset, check_player_death, mouse_aim))
+        .add_systems(Update, (
+            input_dir,
+            move_head,
+            redraw_worm,
+            check_collision,
+            check_damage_zone,
+            handle_reset,
+            check_player_death,
+            mouse_aim,
+            camera_follow,
+        ))
         .run();
+}
+
+fn camera_follow(
+    worm: Res<Worm>,
+    mut camera_q: Query<&mut Transform, With<Camera>>,
+) {
+    if worm.is_dead {
+        return;
+    }
+
+    if let Ok(mut transform) = camera_q.single_mut() {
+        transform.translation.x = worm.head.x;
+        transform.translation.y = worm.head.y;
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -31,7 +58,7 @@ struct Map {
 impl Map {
     fn new() -> Self {
         Self {
-            radius: 400.0, 
+            radius: 2500.0, 
         }
     }
 
@@ -79,6 +106,8 @@ struct Worm {
     points: VecDeque<Vec2>,    // 머리 위치 히스토리 = 몸통
     max_points: usize,         // 몸 길이 (샘플 수)
     sample_distance: f32,      // 이 거리 이상 이동해야 points에 추가
+
+    is_dead: bool,
     // --- 추가: 회전 관련 파라미터
     turn_speed: f32,
     damage_accumulator: f32,
@@ -158,9 +187,8 @@ impl Worm {
     const GROWTH_PER_DOT: usize = 20;
     const MIN_POINTS: usize = 5;
     const INITIAL_MAX_POINTS: usize = Self::MIN_POINTS;
-    const SPAWN_RADIUS: f32 = 300.0;
 
-    fn new() -> Self {
+    fn new(map_radius: f32) -> Self {
         let mut rng = rand::rng();
         let id = rng.random();
         let sample_distance = 6.0;
@@ -168,8 +196,9 @@ impl Worm {
         let angle = rng.random_range(0.0..std::f32::consts::TAU);
         let dir = Dir2::new(Vec2::new(angle.cos(), angle.sin())).unwrap();
 
+        let spawn_radius = map_radius * 0.8;
         let body_length = sample_distance * Self::INITIAL_MAX_POINTS as f32;
-        let safe_radius = Self::SPAWN_RADIUS - body_length;
+        let safe_radius = spawn_radius - body_length;
         let r = rng.random_range(0.0..1.0f32).sqrt() * safe_radius.max(0.0);
         let pos_angle = rng.random_range(0.0..std::f32::consts::TAU);
         let head = Vec2::new(r * pos_angle.cos(), r * pos_angle.sin());
@@ -199,17 +228,20 @@ impl Worm {
             sample_distance,
             turn_speed: 3.0,
             damage_accumulator: 0.0,
+
+            is_dead: false,
         }
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self, map_radius: f32) {
         let mut rng = rand::rng();
 
         let angle = rng.random_range(0.0..std::f32::consts::TAU);
         let dir = Dir2::new(Vec2::new(angle.cos(), angle.sin())).unwrap();
 
+        let spawn_radius = map_radius * 0.8;
         let body_length = self.sample_distance * Self::INITIAL_MAX_POINTS as f32;
-        let safe_radius = Self::SPAWN_RADIUS - body_length;
+        let safe_radius = spawn_radius - body_length;
         let r = rng.random_range(0.0..1.0f32).sqrt() * safe_radius.max(0.0);
         let pos_angle = rng.random_range(0.0..std::f32::consts::TAU);
         let head = Vec2::new(r * pos_angle.cos(), r * pos_angle.sin());
@@ -228,6 +260,7 @@ impl Worm {
         self.mode = SpeedMode::Nomal;
         self.boost_min = self.boost_max;
         self.boost_available = true;
+        self.is_dead = false;
     }
     
     fn grow(&mut self, count: usize) {
@@ -269,6 +302,10 @@ fn mouse_aim(
     camera_q: Query<(&Camera, &GlobalTransform)>,
     mut worm: ResMut<Worm>,
 ) {
+    if worm.is_dead {
+        return;
+    }
+
     if !mouse.pressed(MouseButton::Left) {
         return;
     }
@@ -355,6 +392,10 @@ fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
 
 /// 방향 전환(키 입력). (WASD / 화살표)
 fn input_dir(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut worm: ResMut<Worm>) {
+    if worm.is_dead {
+        return;
+    }
+
     let dt = time.delta_secs();
 
     // 부스트 키
@@ -412,6 +453,7 @@ fn handle_reset(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
     mut worm: ResMut<Worm>,
+    map: Res<Map>,
     worm_query: Query<Entity, With<WormShape>>,
 ) {
     if keys.just_pressed(KeyCode::KeyR) {
@@ -421,7 +463,7 @@ fn handle_reset(
         }
         
         // 지렁이 데이터 리셋
-        worm.reset();
+        worm.reset(map.radius);
         
         // 새로운 지렁이 몸통 생성
         let path = ShapePath::new()
@@ -436,6 +478,10 @@ fn handle_reset(
 
 /// 머리를 시간 기반으로 이동시키고, 일정 거리마다 points에 기록
 fn move_head(time: Res<Time>, mut worm: ResMut<Worm>) {
+    if worm.is_dead {
+        return;
+    }
+
     let dt = time.delta_secs();
 
     // 속도는 부스트 모드로 설정
@@ -516,6 +562,7 @@ fn check_collision(
 ) {
     if worm.is_outside(&map) {
         worm.kill(&mut commands, &worm_query);
+        worm.is_dead = true;
         return;
     }
     // 지렁이 머리와 가까운 점들을 제거
@@ -558,7 +605,9 @@ fn check_player_death(
     mut commands: Commands,
     mut worm: ResMut<Worm>,
     mut dots: ResMut<Dots>,
+    _map: Res<Map>,
     remote: Res<RemoteWorms>,
+    worm_query: Query<Entity, With<WormShape>>,
 ) {
     // 더미 없이 진행: 현재 원격 지렁이가 없으면 아무 일도 안 함.
     if remote.worms.is_empty() {
@@ -604,5 +653,6 @@ fn check_player_death(
     }
 
     // 죽었으니 내 지렁이 리셋(새 ID로 다시 시작)
-    *worm = Worm::new();
+    worm.kill(&mut commands, &worm_query); // Need to despawn body
+    worm.is_dead = true;
 }
