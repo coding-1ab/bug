@@ -114,6 +114,11 @@ struct Worm {
 }
 
 #[derive(Component)]
+struct Dot {
+    growth: usize,
+}
+
+#[derive(Component)]
 struct DotsShape;
 
 #[derive(Resource)]
@@ -154,8 +159,14 @@ impl Dots {
 
     /// 원하는 위치에 점(도트) 하나를 생성한다. (죽으면 내 몸통을 점으로 바꿀 때 필요)
     fn spawn_at(&mut self, commands: &mut Commands, pos: Vec2) -> Entity { // [변경됨] 추가
+        // Random growth amount 1~3
+        let growth = rand::rng().random_range(1..=3);
+        
+        // Size scales with growth: 1->1.0x, 2->1.2x, 3->1.4x
+        let radius = Self::DOT_RADIUS * (0.8 + 0.2 * growth as f32);
+
         let circle = shapes::Circle {
-            radius: Self::DOT_RADIUS,
+            radius,
             center: Vec2::ZERO,
         };
 
@@ -163,6 +174,7 @@ impl Dots {
             ShapeBuilder::with(&circle).fill(PURPLE).build(),
             Transform::from_translation(pos.extend(0.0)),
             DotsShape,
+            Dot { growth },
         )).id();
 
         self.items.push((pos, entity));
@@ -184,7 +196,7 @@ impl Dots {
 }
 
 impl Worm {
-    const GROWTH_PER_DOT: usize = 20;
+    const GROWTH_PER_DOT: usize = 5;
     const MIN_POINTS: usize = 5;
     const INITIAL_MAX_POINTS: usize = Self::MIN_POINTS;
 
@@ -263,8 +275,8 @@ impl Worm {
         self.is_dead = false;
     }
     
-    fn grow(&mut self, count: usize) {
-        self.max_points += count * Self::GROWTH_PER_DOT;
+    fn grow(&mut self, points: usize) {
+        self.max_points += points * Self::GROWTH_PER_DOT;
     }
 
     fn take_damage(&mut self, amount: f32) -> bool {
@@ -385,7 +397,7 @@ fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
         .insert(WormShape);
 
     // dots 생성 (positions 리스트에 추가 + Entity 생성)
-    for _ in 0..20 {
+    for _ in 0..200 {
         dots.spawn(&mut commands, map.radius);
     }
 }
@@ -559,6 +571,7 @@ fn check_collision(
     mut dots: ResMut<Dots>,
     map: Res<Map>,
     worm_query: Query<Entity, With<WormShape>>,
+    dot_query: Query<&Dot>,
 ) {
     if worm.is_outside(&map) {
         worm.kill(&mut commands, &worm_query);
@@ -567,18 +580,24 @@ fn check_collision(
     }
     // 지렁이 머리와 가까운 점들을 제거
     let removed_entities = dots.remove_nearby(worm.head);
-    let count = removed_entities.len();
+    
+    let mut total_growth = 0;
 
-    if count > 0 {
+    if !removed_entities.is_empty() {
         // 제거된 점들을 삭제
-        for entity in removed_entities {
+        for entity in removed_entities.iter().copied() {
+            if let Ok(dot) = dot_query.get(entity) {
+                total_growth += dot.growth;
+            }
             commands.entity(entity).despawn();
         }
 
-        worm.grow(count);
+        if total_growth > 0 {
+            worm.grow(total_growth);
+        }
 
         // 제거된 점들 만큼 새로운 점들 생성
-        for _ in 0..count {
+        for _ in 0..removed_entities.len() {
             dots.spawn(&mut commands, map.radius);
         }
     }
