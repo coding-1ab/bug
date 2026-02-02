@@ -1,6 +1,10 @@
 use crate::network::error::NetworkError;
 use crate::network::util::bytes_to_u16_be;
 
+pub mod message_from_client;
+pub mod message_from_server;
+pub mod worm_body;
+
 // 수신된 패킷의 길이 체크.
 // 충분하면, 사용하게 될 바이트를 제외한 잔여 패킷의 사이즈를 리턴한다.
 //  길이    |   유형  |   메세지

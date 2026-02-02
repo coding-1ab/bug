@@ -1,11 +1,12 @@
 mod network;
 
-use crate::network::MessageFromClient;
+use crate::network::message::message_from_client::MessageFromClient;
 use crate::network::util;
 use crate::network::error::NetworkError;
 use std::io::Read;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::thread;
+use network::message;
 
 fn main() {
     let listen_port: u16 = 8888;
@@ -54,7 +55,7 @@ fn handle_client(mut stream: TcpStream) {
         }
 
         loop {
-            match network::validator::validate_packet_length(&buffer) {
+            match message::validate_packet_length(&buffer) {
                 Ok(remaining_byte_size) => {
                     // actual: 1,2,3,4,5 / expected: 1,2,3 => remaining: 4,5 (2개)
                     let message_bytes = buffer.drain(..buffer.len() - remaining_byte_size)
@@ -123,12 +124,14 @@ fn process_message(msg: MessageFromClient, client_access_info: &SocketAddr) {
 
 #[cfg(test)]
 mod tests {
-    use crate::network::{util, MessageFromClient, WormBody};
     use std::io;
     use std::io::Write;
     use std::net::{Shutdown, TcpStream};
     use std::thread::sleep;
     use std::time::Duration;
+    use crate::network::message::message_from_client::MessageFromClient;
+    use crate::network::message::worm_body::WormBody;
+    use crate::network::util;
 
     // fixture
     struct TestContext {
