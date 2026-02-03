@@ -21,6 +21,30 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
+// bytes -> color
+pub fn bytes_to_color(bytes: &[u8]) -> Result<(f32, f32, f32, f32), NetworkError> {
+    if bytes.len() < 16 {
+        return Err(NetworkError::ShortMsg {expected_length: 16, actual_length: bytes.len()});
+    }
+
+    let r = f32::from_be_bytes(bytes[0..4].try_into().unwrap());
+    let g = f32::from_be_bytes(bytes[4..8].try_into().unwrap());
+    let b = f32::from_be_bytes(bytes[8..12].try_into().unwrap());
+    let a = f32::from_be_bytes(bytes[12..16].try_into().unwrap());
+
+    Ok((r, g, b, a))
+}
+
+// color -> bytes
+pub fn color_to_bytes(color: &(f32, f32, f32, f32)) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(16);
+    bytes.extend_from_slice(&color.0.to_be_bytes());
+    bytes.extend_from_slice(&color.1.to_be_bytes());
+    bytes.extend_from_slice(&color.2.to_be_bytes());
+    bytes.extend_from_slice(&color.3.to_be_bytes());
+    bytes
+}
+
 // bytes -> positions
 pub fn bytes_to_positions(bytes: &[u8]) -> Result<Vec<(f32, f32)>, NetworkError> {
     if bytes.len() % 8 != 0 {

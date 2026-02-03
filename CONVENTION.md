@@ -9,5 +9,5 @@
 - 클라이언트에서 지렁이 색깔 데이터는 `Srgba` crate를 사용하고 있는 것을 확인했습니다
   - `fn new(red: f32, green: f32, blue: f32, alpha: f32) -> Self`
   - `Srgba` crate에서 생성자를 확인하니까 function signature가 위와 같음
-  - 따라서 서버에서도 `(f32, f32, f32, f32)` 형태로 `rgba` 데이터를 제공하도록 구현 예정입니다
+  - 따라서 서버에서도 `(f32, f32, f32, f32)` 형태로 `rgba` 데이터를 제공하도록 함
 
