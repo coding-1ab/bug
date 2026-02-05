@@ -15,18 +15,10 @@ fn main() {
         .insert_resource(worm)
         .insert_resource(Dots::new())
         .insert_resource(RemoteWorms::new())
+        .insert_resource(Leaderboard::new(5))
         .add_systems(Startup, setup)
-        .add_systems(Update, (
-            input_dir,
-            move_head,
-            redraw_worm,
-            check_collision,
-            check_damage_zone,
-            handle_reset,
-            check_player_death,
-            mouse_aim,
-            camera_follow,
-        ))
+        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, check_damage_zone, handle_reset, check_player_death, mouse_aim, draw_leaderboard_ui, camera_follow))
+        .add_systems(FixedUpdate, (move_head, check_collision, check_damage_zone, check_player_death, update_leaderboard))
         .run();
 }
 
@@ -400,6 +392,45 @@ fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
     for _ in 0..200 {
         dots.spawn(&mut commands, map.radius);
     }
+
+    commands.spawn((
+        Text::new("Leaderboard"),
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(16.0),
+            top: Val::Px(16.0),
+            ..default()
+        },
+        LeaderboardText,
+    ));
+}
+
+fn draw_leaderboard_ui(
+    worm: Res<Worm>,
+    leaderboard: Res<Leaderboard>,
+    mut q: Query<&mut Text, With<LeaderboardText>>,
+) {
+    if !leaderboard.is_changed() {
+        return;
+    }
+
+    let my_rank = leaderboard.my_rank(worm.id);
+
+    if let Some(mut text) = q.iter_mut().next() {
+        let mut s = String::from("Leaderboard\n");
+
+        for (i, e) in leaderboard.entries.iter().enumerate() {
+            let me_mark = if e.is_me { " (ME)" } else { "" };
+            s.push_str(&format!("{}. {} - {}{}\n", i + 1, e.id, e.length, me_mark));
+        }
+
+        match my_rank {
+            Some(r) => s.push_str(&format!("\nMy Rank: {}", r)),
+            None => s.push_str("\nMy Rank: -"),
+        }
+
+        *text = Text::new(s);
+    }
 }
 
 /// 방향 전환(키 입력). (WASD / 화살표)
@@ -675,3 +706,77 @@ fn check_player_death(
     worm.kill(&mut commands, &worm_query); // Need to despawn body
     worm.is_dead = true;
 }
+
+#[derive(Debug, Clone)]
+struct LeaderboardEntry {
+    id: u64,       // 유저 ID
+    length: usize, // 길이(점수)
+    is_me: bool,   // 내 캐릭터인지
+}
+
+#[derive(Resource, Debug)]
+struct Leaderboard {
+    top_n: usize,                  // 상위 몇 명까지 보관할지
+    entries: Vec<LeaderboardEntry> // 계산된 순위 결과
+}
+
+impl Leaderboard {
+    fn new(top_n: usize) -> Self {
+        Self {
+            top_n,
+            entries: Vec::new(),
+        }
+    }
+
+    // 나중에 UI팀이 "내 등수" 필요할 때 바로 쓰라고 넣어둔 보조 함수
+    fn my_rank(&self, my_id: u64) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|e| e.id == my_id)
+            .map(|idx| idx + 1)
+    }
+}
+
+fn update_leaderboard(
+    worm: Res<Worm>,
+    remote: Res<RemoteWorms>,
+    mut leaderboard: ResMut<Leaderboard>,
+) {
+    let mut list = Vec::with_capacity(1 + remote.worms.len());
+
+    // 내 플레이어
+    list.push(LeaderboardEntry {
+        id: worm.id,
+        length: worm.points.len(), // 현재 몸통 샘플 길이 기준
+        is_me: true,
+    });
+
+    // 다른 플레이어들
+    for rw in remote.worms.iter() {
+        // 혹시 내 ID가 섞여 들어오면 중복 방지
+        if rw.id == worm.id {
+            continue;
+        }
+
+        list.push(LeaderboardEntry {
+            id: rw.id,
+            length: rw.points.len(),
+            is_me: false,
+        });
+    }
+
+    // 정렬: 길이 내림차순(큰 게 1등), 동점이면 ID 오름차순
+    list.sort_by(|a, b| b.length.cmp(&a.length).then(a.id.cmp(&b.id)));
+
+    // top_n만 유지
+    let top_n = leaderboard.top_n;
+    if list.len() > top_n {
+        list.truncate(top_n);
+    }
+
+    // 결과 저장
+    leaderboard.entries = list;
+}
+
+#[derive(Component)]
+struct LeaderboardText;
