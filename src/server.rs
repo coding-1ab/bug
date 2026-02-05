@@ -3,11 +3,13 @@ mod network;
 use crate::network::message::message_from_client::MessageFromClient;
 use crate::network::util;
 use crate::network::error::NetworkError;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::thread;
 use tracing::{error, info, warn};
 use network::message;
+use crate::network::message::message_from_server::MessageFromServer;
+use crate::network::message::worm_body::WormBody;
 
 fn main() {
     // initialize logging library
@@ -80,8 +82,10 @@ fn handle_client(mut stream: TcpStream) {
 
                     let msg = result.unwrap();
 
-                    // todo ...
-                    process_message(msg, &client_access_info);
+                    // todo 응답 메세지 유형에 따라, 모든 유저들에게 브로드캐스트할지 해당 클라이언트에게만 응답할지 분기되어야 함.
+                    let response_bytes = process_message(msg, &client_access_info).make_bytes();
+                    info!("[{}] response bytes = {}", client_access_info, util::bytes_to_hex(&response_bytes));
+                    let _ = stream.write_all(&response_bytes);
                 },
                 // 패킷이 아직 부족한 경우에는 아무것도 하지 않음. 필요한 경우, 얼마나 부족한지 로깅할 수 있음.
                 Err(NetworkError::TooShortMsg) | Err(NetworkError::ShortMsg { .. }) => break,
@@ -110,24 +114,26 @@ fn handle_client(mut stream: TcpStream) {
     }
 }
 
-// fn process_message(msg: MessageFromClient) -> MessageFromServer {
-fn process_message(msg: MessageFromClient, client_access_info: &SocketAddr) {
+fn process_message(msg: MessageFromClient, client_access_info: &SocketAddr) -> MessageFromServer {
     match msg {
         MessageFromClient::ReqJoin { client_id} => {
             info!("[{}] client joined to the game. (id = {})", client_access_info, client_id);
+            MessageFromServer::ResJoin { client_id, worm_body: WormBody::random(client_id) }
         },
         MessageFromClient::ReqLeave { client_id } => {
             info!("[{}] client leaved to the game. (id = {})", client_access_info, client_id);
+            MessageFromServer::ResLeave { client_id }
         },
         MessageFromClient::ReqMove { client_id, worm_body } => {
             info!("[{}] client moved in the game. (id = {}, positions = {:?})",
                      client_access_info, client_id, worm_body);
+            MessageFromServer::ResMove { client_id, worm_body }
         },
         MessageFromClient::ReqEat { .. } => {
-            // todo ..
+            todo!()
         },
         MessageFromClient::ReqDie { .. } => {
-            // todo ..
+            todo!()
         },
     }
 }
