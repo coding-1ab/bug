@@ -14,25 +14,53 @@ fn main() {
         .insert_resource(map)
         .insert_resource(worm)
         .insert_resource(Dots::new())
+        .insert_resource(AbsorbingDots::default())
         .insert_resource(RemoteWorms::new())
         .insert_resource(Leaderboard::new(5))
         .add_systems(Startup, setup)
-        .add_systems(Update, (input_dir, move_head, redraw_worm, check_collision, check_damage_zone, handle_reset, check_player_death, mouse_aim, draw_leaderboard_ui, camera_follow))
+        .add_systems(Update, (
+            input_dir,
+            move_head,
+            redraw_worm,
+            check_collision,
+            animate_absorbing,
+            check_damage_zone,
+            handle_reset,
+            check_player_death,
+            mouse_aim,
+            draw_leaderboard_ui,
+            camera_follow))
         .add_systems(FixedUpdate, (move_head, check_collision, check_damage_zone, check_player_death, update_leaderboard))
         .run();
+}
+
+#[derive(Resource, Default)]
+struct AbsorbingDots {
+    // entity, growth, elapsed, duration, start_pos
+    items: Vec<(Entity, usize, f32, f32, Vec2)>,
 }
 
 fn camera_follow(
     worm: Res<Worm>,
     mut camera_q: Query<&mut Transform, With<Camera>>,
+    time: Res<Time>,
 ) {
     if worm.is_dead {
         return;
     }
 
     if let Ok(mut transform) = camera_q.single_mut() {
-        transform.translation.x = worm.head.x;
-        transform.translation.y = worm.head.y;
+        // smooth translation towards head using time-based exponential smoothing
+        let dt = time.delta_secs();
+        let target = Vec3::new(worm.head.x, worm.head.y, transform.translation.z);
+        let trans_alpha = 1.0 - (-8.0 * dt).exp(); // responsiveness
+        transform.translation = transform.translation.lerp(target, trans_alpha);
+
+        // smooth zoom out as worm grows so map remains visible (gentle, time-based)
+        let len = worm.points.len() as f32;
+        let target_zoom = (1.0 + len * 0.005).clamp(1.0, 3.0);
+        let zoom_alpha = 1.0 - (-3.0 * dt).exp();
+        transform.scale = transform.scale.lerp(Vec3::splat(target_zoom), zoom_alpha);
     }
 }
 
@@ -121,6 +149,9 @@ struct Dots {
 impl Dots {
     const EAT_RADIUS: f32 = 20.0;
     const DOT_RADIUS: f32 = 12.0;
+    // sector (fan) absorption params - made larger by default
+    const SECTOR_RADIUS: f32 = 120.0;
+    const SECTOR_ANGLE: f32 = std::f32::consts::FRAC_PI_2;
 
     fn new() -> Self {
         Self {
@@ -164,7 +195,8 @@ impl Dots {
 
         let entity = commands.spawn((
             ShapeBuilder::with(&circle).fill(PURPLE).build(),
-            Transform::from_translation(pos.extend(0.0)),
+                // render dots between worm and damage zone
+                Transform::from_translation(pos.extend(0.0)),
             DotsShape,
             Dot { growth },
         )).id();
@@ -185,11 +217,46 @@ impl Dots {
         });
         removed
     }
+
+    /// Remove dots that lie inside a sector (fan) in front of `head` along `dir`.
+    /// Returns removed entities.
+    fn remove_in_sector(&mut self, head: Vec2, dir: Vec2) -> Vec<Entity> {
+        // default wrapper uses the constants
+        self.remove_in_sector_params(head, dir, Self::SECTOR_RADIUS, Self::SECTOR_ANGLE)
+    }
+
+    fn remove_in_sector_params(&mut self, head: Vec2, dir: Vec2, radius: f32, angle: f32) -> Vec<Entity> {
+        let mut removed = Vec::new();
+
+        let half_cos = (angle * 0.5).cos();
+
+        self.items.retain(|(pos, entity)| {
+            let rel = *pos - head;
+            let dist = rel.length();
+            if dist <= std::f32::EPSILON {
+                removed.push(*entity);
+                return false;
+            }
+            if dist > radius {
+                return true;
+            }
+
+            let dir_dot = dir.dot(rel / dist);
+            if dir_dot >= half_cos {
+                removed.push(*entity);
+                false
+            } else {
+                true
+            }
+        });
+
+        removed
+    }
 }
 
 impl Worm {
-    const GROWTH_PER_DOT: usize = 5;
-    const MIN_POINTS: usize = 5;
+    const GROWTH_PER_DOT: usize = 1;
+    const MIN_POINTS: usize = 16;
     const INITIAL_MAX_POINTS: usize = Self::MIN_POINTS;
 
     fn new(map_radius: f32) -> Self {
@@ -345,12 +412,17 @@ fn mouse_aim(
 struct WormShape;
 
 #[derive(Component)]
+struct WormCap {
+    is_head: bool,
+}
+
+#[derive(Component)]
 struct DamageZone {
     radius: f32,
     damage_per_sec: f32,
 }
 
-fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
+fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>, worm: Res<Worm>) {
     commands.spawn(Camera2d);
 
     // 게임 맵 생성
@@ -372,21 +444,38 @@ fn setup(mut commands: Commands, mut dots: ResMut<Dots>, map: Res<Map>) {
     };
     commands.spawn((
         ShapeBuilder::with(&circle).fill(light_blue_transparent).build(),
-        Transform::from_translation(pos.extend(-0.5)),
+        // place damage zone below dots but above background
+        Transform::from_translation(pos.extend(-0.9)),
         DamageZone {
             radius,
             damage_per_sec: 30.0,
         },
     ));
 
-    // 초기 더미 path
-    let path = ShapePath::new()
-        .move_to(Vec2::new(-200.0, 0.0))
-        .line_to(Vec2::new(-199.0, 0.0));
+    // 초기 더미 path: 실제 게임 시작 시에는 `worm` 리소스의 위치로 초기화
+    let path = ShapePath::new().move_to(worm.head).line_to(worm.head + Vec2::new(1.0, 0.0));
 
+    // main body (place above dots)
     commands
-        .spawn(ShapeBuilder::with(&path).stroke((GREEN, 10.0)).build())
+        .spawn((ShapeBuilder::with(&path).stroke((GREEN, 12.0)).build(), Transform::from_translation(Vec3::new(0.0, 0.0, 0.5))))
         .insert(WormShape);
+
+    // caps: head + tail (spawn as separate entities but mark with WormShape so kill() clears them)
+    let cap_circle = shapes::Circle { radius: 6.0, center: Vec2::ZERO };
+    // head cap
+    commands.spawn((
+        ShapeBuilder::with(&cap_circle).fill(GREEN).build(),
+        Transform::from_translation(worm.head.extend(0.5)),
+        WormShape,
+        WormCap { is_head: true },
+    ));
+    // tail cap (just behind head initially)
+    commands.spawn((
+        ShapeBuilder::with(&cap_circle).fill(GREEN).build(),
+        Transform::from_translation((worm.head - Vec2::new(6.0, 0.0)).extend(0.5)),
+        WormShape,
+        WormCap { is_head: false },
+    ));
 
     // dots 생성 (positions 리스트에 추가 + Entity 생성)
     for _ in 0..200 {
@@ -508,14 +597,25 @@ fn handle_reset(
         // 지렁이 데이터 리셋
         worm.reset(map.radius);
         
-        // 새로운 지렁이 몸통 생성
-        let path = ShapePath::new()
-            .move_to(worm.head)
-            .line_to(worm.head + Vec2::new(1.0, 0.0));
-        
+        // 새로운 지렁이 몸통 생성 (main + caps)
+        let path = ShapePath::new().move_to(worm.head).line_to(worm.head + Vec2::new(1.0, 0.0));
         commands
-            .spawn(ShapeBuilder::with(&path).stroke((GREEN, 10.0)).build())
-            .insert(WormShape);
+            .spawn((ShapeBuilder::with(&path).stroke((GREEN, 12.0)).build(), Transform::from_translation(Vec3::new(0.0, 0.0, 0.5))))
+                .insert(WormShape);
+
+        let cap_circle = shapes::Circle { radius: 6.0, center: Vec2::ZERO };
+        commands.spawn((
+            ShapeBuilder::with(&cap_circle).fill(GREEN).build(),
+            Transform::from_translation(worm.head.extend(0.5)),
+            WormShape,
+            WormCap { is_head: true },
+        ));
+        commands.spawn((
+            ShapeBuilder::with(&cap_circle).fill(GREEN).build(),
+            Transform::from_translation((worm.head - Vec2::new(6.0, 0.0)).extend(0.5)),
+            WormShape,
+            WormCap { is_head: false },
+        ));
     }
 }
 
@@ -553,7 +653,11 @@ fn move_head(time: Res<Time>, mut worm: ResMut<Worm>) {
 }
 
 /// points로 지렁이 몸통을 다시 그리고 Shape를 교체
-fn redraw_worm(worm: Res<Worm>, mut query: Query<&mut Shape, With<WormShape>>) {
+fn redraw_worm(
+    worm: Res<Worm>,
+    mut main_shape_q: Query<&mut Shape, (With<WormShape>, Without<WormCap>)>,
+    mut cap_q: Query<(&mut Shape, &mut Transform, &WormCap), With<WormShape>>,
+) {
     // points가 안 바뀌었으면 스킵
     if !worm.is_changed() {
         return;
@@ -571,9 +675,27 @@ fn redraw_worm(worm: Res<Worm>, mut query: Query<&mut Shape, With<WormShape>>) {
         path = path.line_to(*p);
     }
 
-    // 2) Shape 교체로 렌더 반영
-    if let Some(mut shape) = query.iter_mut().next() {
-        *shape = ShapeBuilder::with(&path).stroke((GREEN, 10.0)).build();
+    // thickness scales with length; doubled baseline and growth
+    let thickness = (16.0 + worm.points.len() as f32 * 0.24).clamp(16.0, 72.0);
+
+    // 2) Shape 교체로 렌더 반영 (main body)
+    if let Some(mut shape) = main_shape_q.iter_mut().next() {
+        *shape = ShapeBuilder::with(&path).stroke((GREEN, thickness)).build();
+    }
+
+    // update caps: head & tail as filled circles
+    let head_pos = *pts.last().unwrap();
+    let tail_pos = pts.first().copied().unwrap_or(head_pos);
+    let cap_radius = thickness * 0.5;
+
+    for (mut shape, mut tf, cap) in cap_q.iter_mut() {
+        let circle = shapes::Circle { radius: cap_radius, center: Vec2::ZERO };
+        *shape = ShapeBuilder::with(&circle).fill(GREEN).build();
+        if cap.is_head {
+            tf.translation = head_pos.extend(0.5);
+        } else {
+            tf.translation = tail_pos.extend(0.5);
+        }
     }
 }
 
@@ -603,35 +725,77 @@ fn check_collision(
     map: Res<Map>,
     worm_query: Query<Entity, With<WormShape>>,
     dot_query: Query<&Dot>,
+    dot_tf_q: Query<&Transform, With<DotsShape>>,
+    mut absorbing: ResMut<AbsorbingDots>,
 ) {
     if worm.is_outside(&map) {
         worm.kill(&mut commands, &worm_query);
         worm.is_dead = true;
         return;
     }
-    // 지렁이 머리와 가까운 점들을 제거
-    let removed_entities = dots.remove_nearby(worm.head);
-    
-    let mut total_growth = 0;
+
+    let thickness = (16.0 + worm.points.len() as f32 * 0.24).clamp(16.0, 72.0);
+    // sector center: a bit in front of the head (half thickness)
+    let sector_center = worm.head + worm.dir.as_vec2() * (thickness * 0.5);
+    // radius: ~150% of thickness
+    let radius = thickness * 1.50;
+    // angle: 150 degrees (5π/6)
+    let angle = std::f32::consts::PI * 5.0 / 6.0;
+
+    let removed_entities = dots.remove_in_sector_params(sector_center, worm.dir.as_vec2(), radius, angle);
 
     if !removed_entities.is_empty() {
-        // 제거된 점들을 삭제
-        for entity in removed_entities.iter().copied() {
-            if let Ok(dot) = dot_query.get(entity) {
-                total_growth += dot.growth;
-            }
-            commands.entity(entity).despawn();
-        }
-
-        if total_growth > 0 {
-            worm.grow(total_growth);
-        }
-
-        // 제거된 점들 만큼 새로운 점들 생성
-        for _ in 0..removed_entities.len() {
-            dots.spawn(&mut commands, map.radius);
+        for entity in removed_entities.into_iter() {
+            let growth = dot_query.get(entity).map(|d| d.growth).unwrap_or(1);
+            let start_pos = dot_tf_q.get(entity).map(|t| t.translation.truncate()).unwrap_or(Vec2::ZERO);
+            let duration = 0.18;
+            absorbing.items.push((entity, growth, 0.0, duration, start_pos));
         }
     }
+}
+
+fn animate_absorbing(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut absorbing: ResMut<AbsorbingDots>,
+    mut worm: ResMut<Worm>,
+    mut transforms: Query<&mut Transform, With<DotsShape>>,
+    mut dots: ResMut<Dots>,
+    map: Res<Map>,
+) {
+    let dt = time.delta_secs();
+
+    if absorbing.items.is_empty() {
+        return;
+    }
+
+    let mut remaining = Vec::new();
+
+    for (entity, growth, mut elapsed, duration, start_pos) in absorbing.items.drain(..) {
+        elapsed += dt;
+        let t = (elapsed / duration).clamp(0.0, 1.0);
+        let target = worm.head;
+        let pos = start_pos.lerp(target, t);
+
+        if let Ok(mut tf) = transforms.get_mut(entity) {
+            // keep dot layer between worm and damage zone while animating
+            tf.translation = pos.extend(0.0);
+            let scale = 1.0 - t * 0.9;
+            tf.scale = Vec3::splat(scale.max(0.05));
+        }
+
+        if elapsed >= duration {
+            // finalize: despawn entity, add growth, spawn replacement
+            commands.entity(entity).despawn();
+            worm.grow(growth);
+            // spawn replacement
+            dots.spawn(&mut commands, map.radius);
+        } else {
+            remaining.push((entity, growth, elapsed, duration, start_pos));
+        }
+    }
+
+    absorbing.items = remaining;
 }
 
 #[derive(Resource)]
@@ -780,3 +944,6 @@ fn update_leaderboard(
 
 #[derive(Component)]
 struct LeaderboardText;
+
+#[derive(Component)]
+struct DamageText;
